@@ -1,0 +1,23 @@
+[
+  {
+    "name": "get root",
+    "method": "GET", "scheme": "https", "host": "aivan-hud.home.arpa",
+    "target": "/", "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "nonce": "N1", "timestamp": "1700000000",
+    "expected": "aivan-v1\nGET\nhttps://aivan-hud.home.arpa\n/\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nN1\n1700000000"
+  },
+  {
+    "name": "query string matters",
+    "method": "GET", "scheme": "https", "host": "aivan-hud.home.arpa",
+    "target": "/admin?id=2", "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "nonce": "N1", "timestamp": "1700000000",
+    "expected": "aivan-v1\nGET\nhttps://aivan-hud.home.arpa\n/admin?id=2\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nN1\n1700000000"
+  },
+  {
+    "name": "encoded path survives",
+    "method": "POST", "scheme": "https", "host": "aivan-hud.home.arpa",
+    "target": "/a%20b?y=%2F", "body_sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    "nonce": "N2", "timestamp": "1700000001",
+    "expected": "aivan-v1\nPOST\nhttps://aivan-hud.home.arpa\n/a%20b?y=%2F\n2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\nN2\n1700000001"
+  }
+]

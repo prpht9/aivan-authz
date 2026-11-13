@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chris/aivan-authz/internal/policy"
 )
 
 const goodPolicy = `
@@ -62,15 +64,19 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MaxBody != 1048576 {
 		t.Errorf("MaxBody = %d, want 1048576", cfg.MaxBody)
 	}
-	hp, ok := cfg.Policy.Hosts["aivan-hud.home.arpa"]
+	hp, ok := cfg.Policy.Scheme("aivan-hud.home.arpa")
 	if !ok {
-		t.Fatalf("policy host missing: %+v", cfg.Policy.Hosts)
+		t.Fatalf("policy host missing: %v", cfg.Policy.Hosts())
 	}
-	if hp.Scheme != "https" {
-		t.Errorf("scheme = %q, want https", hp.Scheme)
+	if hp != "https" {
+		t.Errorf("scheme = %q, want https", hp)
 	}
-	if len(hp.Routes) != 2 {
-		t.Fatalf("routes = %+v, want 2", hp.Routes)
+	m, err := cfg.Policy.Match("aivan-hud.home.arpa", "/admin/users")
+	if err != nil {
+		t.Fatalf("Match: %v", err)
+	}
+	if m.Class != policy.ClassAdmin || m.Route != "/admin" {
+		t.Fatalf("Match(/admin/users) = %s via %q, want admin via /admin", m.Class, m.Route)
 	}
 }
 
@@ -157,6 +163,16 @@ hosts:
 			name:    "enrollment class refused until phase f",
 			env:     map[string]string{"AIVAN_POLICY": enrollmentClass},
 			wantSub: "unknown class",
+		},
+		{
+			name: "route with no class",
+			env: map[string]string{"AIVAN_POLICY": writePolicy(t, `
+hosts:
+  aivan-hud.home.arpa:
+    routes:
+      - { prefix: /admin }
+`)},
+			wantSub: "no class",
 		},
 		{
 			name:    "policy unparseable",

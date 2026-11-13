@@ -2,49 +2,29 @@ package httpx
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/chris/aivan-authz/internal/reqid"
 )
 
-type requestIDKey struct{}
-
 // RequestIDHeader is the response header carrying the request id. Phase C
-// returns it to the application as X-Aivan-Request-Id; here it appears in logs
-// only.
-const RequestIDHeader = "X-Aivan-Request-Id"
+// returns it to the application as X-Aivan-Request-Id; the generator lives in
+// internal/reqid so the authorization path and this package share one value.
+const RequestIDHeader = reqid.Header
 
 // RequestIDFrom returns the id attached to ctx, or "".
-func RequestIDFrom(ctx context.Context) string {
-	id, _ := ctx.Value(requestIDKey{}).(string)
-	return id
-}
+func RequestIDFrom(ctx context.Context) string { return reqid.From(ctx) }
 
 // WithRequestID generates a 16-byte hex id for every request, puts it in the
-// context and in the response header. The id is generated, never read from the
-// client.
+// context and in the response header.
 func WithRequestID(log *slog.Logger) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var raw [16]byte
-			if _, err := rand.Read(raw[:]); err != nil {
-				// crypto/rand failing is fatal for the design; a request id
-				// is not worth serving without one.
-				log.Error("request id: entropy unavailable", "error", err)
-				http.Error(w, "service unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			id := hex.EncodeToString(raw[:])
-			w.Header().Set(RequestIDHeader, id)
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey{}, id)))
-		})
-	}
+	return reqid.WithRequestID(log)
 }
 
 // accessLog logs one line per request at debug level. Health checks are noisy
-// at info, and the decision log in Phase C carries the real content.
+// at info, and the gate's decision log carries the real content.
 func accessLog(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

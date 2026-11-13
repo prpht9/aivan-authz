@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/chris/aivan-authz/internal/policy"
 )
 
 const (
@@ -38,35 +40,10 @@ type Config struct {
 
 	TrustedProxies []*net.IPNet
 
-	Policy *Policy
+	// Policy is the validated, match-ready route table. It is immutable after
+	// Load, so handlers read it without a lock.
+	Policy *policy.Table
 }
-
-// Policy maps a host to the route classes it carries.
-type Policy struct {
-	Hosts map[string]HostPolicy
-}
-
-// HostPolicy is one host's scheme and routes.
-type HostPolicy struct {
-	Scheme string
-	Routes []Route
-}
-
-// Route is one path prefix and the class a request under it must satisfy.
-type Route struct {
-	Prefix string
-	Class  string
-}
-
-// RouteClass is the set of classes this phase understands. "enrollment" is
-// added in Phase F; until then a policy naming it is a startup refusal.
-type RouteClass string
-
-const (
-	ClassPublic        RouteClass = "public"
-	ClassAuthenticated RouteClass = "authenticated"
-	ClassAdmin         RouteClass = "admin"
-)
 
 // DatabaseURL reads the one variable `migrate` needs.
 func DatabaseURL(getenv func(string) string) (string, error) {
@@ -139,27 +116,16 @@ func Load(getenv func(string) string) (*Config, error) {
 	return cfg, nil
 }
 
+// crossCheck refuses a policy that names a host the gate does not serve. The
+// route-level checks live in policy.New, which the caller runs afterwards.
 func (c *Config) crossCheck() error {
 	listed := make(map[string]bool, len(c.Hosts))
 	for _, h := range c.Hosts {
 		listed[h] = true
 	}
-	for host, hp := range c.Policy.Hosts {
+	for _, host := range c.Policy.Hosts() {
 		if !listed[host] {
 			return fmt.Errorf("policy host %q is not listed in AIVAN_HOSTS", host)
-		}
-		if hp.Scheme != "https" {
-			return fmt.Errorf("policy host %q uses scheme %q; only https is allowed", host, hp.Scheme)
-		}
-		seen := make(map[string]bool, len(hp.Routes))
-		for _, r := range hp.Routes {
-			if !strings.HasPrefix(r.Prefix, "/") {
-				return fmt.Errorf("policy host %q has prefix %q; prefixes start with /", host, r.Prefix)
-			}
-			if seen[r.Prefix] {
-				return fmt.Errorf("policy host %q has prefix %q more than once", host, r.Prefix)
-			}
-			seen[r.Prefix] = true
 		}
 	}
 	return nil
@@ -270,7 +236,7 @@ type policyFile struct {
 	} `yaml:"hosts"`
 }
 
-func loadPolicy(path string) (*Policy, error) {
+func loadPolicy(path string) (*policy.Table, error) {
 	f, err := os.Open(path) // #nosec G304 -- path comes from trusted configuration
 	if err != nil {
 		return nil, fmt.Errorf("AIVAN_POLICY: %w", err)
@@ -287,29 +253,27 @@ func loadPolicy(path string) (*Policy, error) {
 		return nil, fmt.Errorf("AIVAN_POLICY %s: hosts is empty", path)
 	}
 
-	p := &Policy{Hosts: make(map[string]HostPolicy, len(pf.Hosts))}
+	hosts := make(map[string]policy.Host, len(pf.Hosts))
 	for rawHost, hp := range pf.Hosts {
 		host := strings.ToLower(strings.TrimSpace(rawHost))
 		if !validHostname(host) {
 			return nil, fmt.Errorf("AIVAN_POLICY %s: host %q is not a bare hostname", path, rawHost)
 		}
-		scheme := strings.ToLower(hp.Scheme)
-		if scheme == "" {
-			scheme = "https"
-		}
-		policy := HostPolicy{Scheme: scheme}
+		h := policy.Host{Scheme: strings.ToLower(hp.Scheme)}
 		for _, r := range hp.Routes {
-			class := RouteClass(strings.ToLower(r.Class))
-			switch class {
-			case ClassPublic, ClassAuthenticated, ClassAdmin:
-			case "":
-				return nil, fmt.Errorf("AIVAN_POLICY %s: host %q has a route with no class", path, host)
-			default:
-				return nil, fmt.Errorf("AIVAN_POLICY %s: host %q route %q uses unknown class %q", path, host, r.Prefix, r.Class)
-			}
-			policy.Routes = append(policy.Routes, Route{Prefix: r.Prefix, Class: string(class)})
+			h.Routes = append(h.Routes, policy.Route{
+				Prefix: r.Prefix,
+				Class:  policy.Class(strings.ToLower(r.Class)),
+			})
 		}
-		p.Hosts[host] = policy
+		hosts[host] = h
 	}
-	return p, nil
+
+	table, err := policy.New(hosts)
+	if err != nil {
+		// policy.New's messages name the host, prefix and class, but not the
+		// file, and an operator needs the file to know where to look.
+		return nil, fmt.Errorf("AIVAN_POLICY %s: %w", path, err)
+	}
+	return table, nil
 }

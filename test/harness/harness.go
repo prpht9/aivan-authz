@@ -33,7 +33,7 @@ const ServiceRole = "aivan_authz"
 const DefaultSuperuser = "postgres://postgres@localhost/postgres"
 
 // Env skips the test when no cluster is reachable.
-func Env(t *testing.T) {
+func Env(t testing.TB) {
 	t.Helper()
 	if super := superuserDSN(); !reachable(super) {
 		t.Skipf("no superuser database at %s; set AIVAN_TEST_SUPERUSER_URL", super)
@@ -42,7 +42,7 @@ func Env(t *testing.T) {
 
 // Setup creates a scratch database with the fixture, the service role and the
 // migrations applied, and returns DSNs for it. Cleanup is registered on t.
-func Setup(t *testing.T) (service, super string) {
+func Setup(t testing.TB) (service, super string) {
 	t.Helper()
 	Env(t)
 	ctx := context.Background()
@@ -76,14 +76,14 @@ func Setup(t *testing.T) (service, super string) {
 
 // CreateDatabase makes an empty scratch database and returns a superuser DSN
 // for it. Cleanup is registered on t.
-func CreateDatabase(t *testing.T) string {
+func CreateDatabase(t testing.TB) string {
 	t.Helper()
 	Env(t)
 	return createDatabase(t, superuserDSN())
 }
 
 // AsRole rewrites a DSN to connect as another role, keeping host and database.
-func AsRole(t *testing.T, base, role string) string {
+func AsRole(t testing.TB, base, role string) string {
 	t.Helper()
 	u, err := url.Parse(base)
 	if err != nil {
@@ -97,7 +97,7 @@ func AsRole(t *testing.T, base, role string) string {
 // that already exists is left in place, because PostgreSQL roles are
 // cluster-wide and tests that need a specific privilege set create their own
 // name. grants is optional SQL for what the role should additionally hold.
-func CreateRole(t *testing.T, superDSN, role, grants string) {
+func CreateRole(t testing.TB, superDSN, role, grants string) {
 	t.Helper()
 	ctx := context.Background()
 	conn := connect(t, superDSN)
@@ -121,7 +121,7 @@ func CreateRole(t *testing.T, superDSN, role, grants string) {
 }
 
 // Exec runs statements as a superuser against dsn, for test setup.
-func Exec(t *testing.T, dsn, sql string) {
+func Exec(t testing.TB, dsn, sql string) {
 	t.Helper()
 	ctx := context.Background()
 	conn := connect(t, dsn)
@@ -165,7 +165,7 @@ func reachable(dsn string) bool {
 	return true
 }
 
-func createDatabase(t *testing.T, superDSN string) string {
+func createDatabase(t testing.TB, superDSN string) string {
 	t.Helper()
 	ctx := context.Background()
 	conn := connect(t, superDSN)
@@ -190,7 +190,7 @@ func createDatabase(t *testing.T, superDSN string) string {
 
 // ensureRole creates the service role if it is missing. The grant migration
 // names it, and the service DSN cannot connect without it.
-func ensureRole(t *testing.T, ctx context.Context, admin *pgx.Conn) {
+func ensureRole(t testing.TB, ctx context.Context, admin *pgx.Conn) {
 	t.Helper()
 	var exists bool
 	if err := admin.QueryRow(ctx,
@@ -211,7 +211,7 @@ func ensureRole(t *testing.T, ctx context.Context, admin *pgx.Conn) {
 	}
 }
 
-func applyFile(t *testing.T, ctx context.Context, dsn, path string) {
+func applyFile(t testing.TB, ctx context.Context, dsn, path string) {
 	t.Helper()
 	body, err := os.ReadFile(path) // #nosec G304 -- path is built from the test's own location
 	if err != nil {
@@ -224,7 +224,7 @@ func applyFile(t *testing.T, ctx context.Context, dsn, path string) {
 	}
 }
 
-func connect(t *testing.T, dsn string) *pgx.Conn {
+func connect(t testing.TB, dsn string) *pgx.Conn {
 	t.Helper()
 	conn, err := pgx.Connect(context.Background(), dsn)
 	if err != nil {
@@ -233,7 +233,7 @@ func connect(t *testing.T, dsn string) *pgx.Conn {
 	return conn
 }
 
-func withDatabase(t *testing.T, dsn, name string) string {
+func withDatabase(t testing.TB, dsn, name string) string {
 	t.Helper()
 	u, err := url.Parse(dsn)
 	if err != nil {
@@ -251,7 +251,7 @@ func databaseName(dsn string) string {
 	return strings.TrimPrefix(u.Path, "/")
 }
 
-func fixturePath(t *testing.T, name string) string {
+func fixturePath(t testing.TB, name string) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -262,7 +262,7 @@ func fixturePath(t *testing.T, name string) string {
 	return filepath.Join(root, "test", "fixtures", name)
 }
 
-func suffix(t *testing.T) string {
+func suffix(t testing.TB) string {
 	t.Helper()
 	var b [6]byte
 	if _, err := rand.Read(b[:]); err != nil {

@@ -1,8 +1,8 @@
 # aivan-authz: the ingress auth service.
 #
-# Phase B ships the skeleton: it starts under the correct database role,
-# reports health honestly, and is reachable only from Traefik. No route is
-# gated by it yet; Phase E wires it into aivan-hud.
+# Phase C adds the two endpoints Traefik calls: /__aivan/verify (forwardAuth)
+# and /__aivan/nonce. No application route is gated by it yet; Phase E wires the
+# middleware into aivan-hud.
 #
 # Apply with kubectl, like the rest of this cluster's dev manifests.
 apiVersion: v1
@@ -74,6 +74,17 @@ spec:
               value: /etc/aivan/policy.yaml
             - name: AIVAN_LISTEN
               value: ":8080"
+            # Phase C: the nonce rate limiter charges a request to the client
+            # address only when the peer is one of these. It must match the
+            # cluster's pod CIDR, or every request is charged to Traefik's pod
+            # and one noisy client spends everyone's budget.
+            #
+            # Observed on this cluster (2026-11-13): the node's podCIDR is
+            # 192.168.196.0/24 and every pod above is in it. Re-check with
+            #   kubectl get nodes -o jsonpath='{.items[0].spec.podCIDR}'
+            # if the cluster is rebuilt.
+            - name: AIVAN_TRUSTED_PROXY_CIDRS
+              value: "192.168.196.0/24"
           volumeMounts:
             - name: policy
               mountPath: /etc/aivan

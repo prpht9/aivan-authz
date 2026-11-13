@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/chris/aivan-authz/internal/gate"
 )
 
 // MaxRequestTime bounds how long the gate may spend on any request. Traefik's
@@ -13,20 +15,49 @@ import (
 // only place a shorter bound can live is inside the service (spec §8.2).
 const MaxRequestTime = 5 * time.Second
 
-// NewRouter builds the gate's own router. The health endpoints live here and
-// are therefore excluded from the forwardAuth chain by construction: they are
-// on this server, not on the application's.
+// RouterOptions is what the gate's own listeners need. Health is optional so
+// the health-only tests keep their existing shape.
+type RouterOptions struct {
+	Pool   *pgxpool.Pool
+	Log    *slog.Logger
+	Gate   *gate.Gate
+	Health *Health
+}
+
+// NewRouter builds the gate's own router. The health endpoints and the
+// /__aivan/* endpoints live here and are therefore excluded from the
+// forwardAuth chain by construction: they are on this server, not on the
+// application's.
+//
+// A nil Gate mounts health only, which is what the Phase B tests construct.
 func NewRouter(pool *pgxpool.Pool, log *slog.Logger) http.Handler {
-	health := &Health{Pool: pool, Log: log}
+	return NewRouterWith(RouterOptions{Pool: pool, Log: log})
+}
+
+// NewRouterWith mounts the full surface.
+func NewRouterWith(o RouterOptions) http.Handler {
+	if o.Log == nil {
+		o.Log = slog.Default()
+	}
+	health := o.Health
+	if health == nil {
+		health = &Health{Pool: o.Pool, Log: o.Log}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.Liveness)
 	mux.HandleFunc("GET /readyz", health.Readiness)
 
-	// Phase C mounts /__aivan/verify and /__aivan/nonce on this same mux.
+	if o.Gate != nil {
+		// No method in the pattern: preserveRequestMethod forwards the real
+		// one, and the gate must answer every method without a panic.
+		mux.HandleFunc("/__aivan/verify", o.Gate.Verify)
+		mux.HandleFunc("/__aivan/nonce", o.Gate.Nonce)
+	}
+
 	var h http.Handler = mux
-	h = accessLog(log)(h)
-	h = WithRequestID(log)(h)
+	h = accessLog(o.Log)(h)
+	h = WithRequestID(o.Log)(h)
 	h = timeoutMiddleware(MaxRequestTime)(h)
 	return h
 }

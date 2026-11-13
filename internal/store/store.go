@@ -19,8 +19,9 @@ type DB struct {
 	Pool *pgxpool.Pool
 }
 
-// Open connects the pool and proves the database answers.
-func Open(ctx context.Context, dsn string) (*DB, error) {
+// Open connects the pool and proves the database answers. Options adjust the
+// pool before it is created; the instrumentation in instrument.go uses them.
+func Open(ctx context.Context, dsn string, opts ...Option) (*DB, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("database url: %w", err)
@@ -31,6 +32,9 @@ func Open(ctx context.Context, dsn string) (*DB, error) {
 	cfg.ConnConfig.RuntimeParams["application_name"] = "aivan-authz"
 	cfg.MaxConns = 16
 	cfg.MinConns = 2
+	for _, opt := range opts {
+		opt(cfg)
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, ConnectTimeout)
 	defer cancel()

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/chris/aivan-authz/internal/config"
+	"github.com/chris/aivan-authz/internal/gate"
 	"github.com/chris/aivan-authz/internal/httpx"
 	"github.com/chris/aivan-authz/internal/store"
 )
@@ -99,7 +100,14 @@ func serve(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	db, err := store.Open(ctx, cfg.DBURL)
+	// The counter and the prepared statements are attached before the pool
+	// hands out its first connection, so every connection the gate ever uses
+	// has both.
+	counter := &store.Counter{}
+	db, err := store.Open(ctx, cfg.DBURL,
+		store.WithQueryCounter(counter),
+		store.WithStatements(store.GateStatements()...),
+	)
 	if err != nil {
 		return fmt.Errorf("refusing to start: %w", err)
 	}
@@ -111,19 +119,35 @@ func serve(log *slog.Logger) error {
 		return err
 	}
 
+	g, err := gate.New(gate.Options{
+		Pool:           db.Pool,
+		Table:          cfg.Policy,
+		Log:            log,
+		NonceTTL:       cfg.NonceTTL,
+		Skew:           cfg.Skew,
+		MaxBody:        cfg.MaxBody,
+		TrustedProxies: cfg.TrustedProxies,
+		Counter:        counter,
+	})
+	if err != nil {
+		return fmt.Errorf("refusing to start: %w", err)
+	}
+
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Listen, err)
 	}
 
 	srv := &http.Server{
-		Handler:           httpx.NewRouter(db.Pool, log),
+		Handler:           httpx.NewRouterWith(httpx.RouterOptions{Pool: db.Pool, Log: log, Gate: g}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
+
+	go g.RunMaintenance(ctx)
 
 	log.Info("listening",
 		"listen", ln.Addr().String(),
