@@ -1,0 +1,161 @@
+# aivan-authz: the ingress auth service.
+#
+# Phase B ships the skeleton: it starts under the correct database role,
+# reports health honestly, and is reachable only from Traefik. No route is
+# gated by it yet; Phase E wires it into aivan-hud.
+#
+# Apply with kubectl, like the rest of this cluster's dev manifests.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aivan
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aivan-authz-db
+  namespace: aivan
+type: Opaque
+stringData:
+  # Placeholder. The real DSN is the aivan_authz service role, never the
+  # migration role and never the application's credential. Replace this before
+  # applying, or create the secret out of band:
+  #   kubectl -n aivan create secret generic aivan-authz-db \
+  #     --from-literal=AIVAN_DB_URL='postgres://aivan_authz@aivan-core-rw.aivan-core.svc/aivan_core'
+  AIVAN_DB_URL: postgres://aivan_authz@REPLACE_ME/aivan_core
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aivan-authz-policy
+  namespace: aivan
+data:
+  policy.yaml: |
+    hosts:
+      aivan-hud.home.arpa:
+        routes:
+          - { prefix: /admin, class: admin }
+          - { prefix: /,      class: authenticated }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aivan-authz
+  namespace: aivan
+  labels: { app: aivan-authz }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: aivan-authz }
+  template:
+    metadata:
+      labels: { app: aivan-authz }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: authz
+          image: docker.home.arpa:5000/aivan-authz:latest
+          imagePullPolicy: Always
+          args: ["serve"]
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: AIVAN_DB_URL
+              valueFrom:
+                secretKeyRef: { name: aivan-authz-db, key: AIVAN_DB_URL }
+            - name: AIVAN_HOSTS
+              value: aivan-hud.home.arpa
+            - name: AIVAN_POLICY
+              value: /etc/aivan/policy.yaml
+            - name: AIVAN_LISTEN
+              value: ":8080"
+          volumeMounts:
+            - name: policy
+              mountPath: /etc/aivan
+              readOnly: true
+            # The image's /tmp is not writable under a read-only root, and the
+            # distroless image needs nothing else.
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits:   { cpu: 500m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: policy
+          configMap: { name: aivan-authz-policy }
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aivan-authz
+  namespace: aivan
+spec:
+  selector: { app: aivan-authz }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+# The gate answers forwardAuth only. A direct path to it is a bypass, so the
+# policy admits Traefik and nothing else. This matters from Phase E; it is in
+# place now so the posture is the default rather than a later addition.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aivan-authz-ingress
+  namespace: aivan
+spec:
+  podSelector:
+    matchLabels: { app: aivan-authz }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: traefik }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# The gate makes outbound connections to Postgres and nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aivan-authz-egress
+  namespace: aivan
+spec:
+  podSelector:
+    matchLabels: { app: aivan-authz }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: aivan-core }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    # DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
