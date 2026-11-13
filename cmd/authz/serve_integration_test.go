@@ -26,8 +26,18 @@ import (
 var (
 	buildOnce sync.Once
 	binPath   string
+	buildDir  string
 	buildErr  error
 )
+
+// TestMain removes the temporary build directory the binary lives in.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if buildDir != "" {
+		_ = os.RemoveAll(buildDir)
+	}
+	os.Exit(code)
+}
 
 // binary builds cmd/authz once per test run. The checklist items are about the
 // process's exit behaviour, so they are checked against the real binary rather
@@ -40,6 +50,7 @@ func binary(t *testing.T) string {
 			buildErr = err
 			return
 		}
+		buildDir = dir
 		out := filepath.Join(dir, "authz")
 		cmd := exec.Command("go", "build", "-trimpath", "-o", out, ".")
 		cmd.Env = os.Environ()
