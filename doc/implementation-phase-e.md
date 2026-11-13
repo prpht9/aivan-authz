@@ -320,42 +320,59 @@ curl -sk -b "$COOKIE" -D- https://aivan-hud.home.arpa/admin | head -20
 
 ## E7. Checklist
 
-- [ ] Three routers applied; `kubectl -n aivan get ingressroute` shows them.
-- [ ] `/admin` with no cookie returns `302` to `/__aivan/enroll?rd=%2Fadmin`,
+Done in `hermes-agent`, not `aivan`: Traefik refuses a Service named by an
+IngressRoute in another namespace. See `doc/phase-e-record.md`.
+
+- [x] Three routers applied; `kubectl -n hermes-agent get ingressroute` shows
+      `aivan-hud-gate`, `aivan-hud-public` and `aivan-hud-gated`, plus the
+      `aivan-auth` Middleware.
+- [x] `/admin` with no cookie returns `302` to `/__aivan/enroll?rd=%2Fadmin`,
       and hud logs nothing, because it never received the request.
-- [ ] `/admin` with the console cookie returns the users table.
-- [ ] `/` returns the galaxy page with no cookie.
-- [ ] A forged `X-Aivan-User` and `X-Aivan-User-Id` sent to `/admin` are
+- [x] `/admin` with the console cookie returns the users table.
+- [x] `/` returns the galaxy page with no cookie.
+- [x] A forged `X-Aivan-User` and `X-Aivan-User-Id` sent to `/admin` are
       stripped: the response is the `302`, not a redirect loop and not the
       table. **Acceptance 4.**
-- [ ] The same forged headers with a valid cookie still yield the cookie's user.
-- [ ] The viewer assets load with no cookie: `/hud-script.js`,
+- [x] The same forged headers with a valid cookie still yield the cookie's user.
+- [x] The viewer assets load with no cookie: `/hud-script.js`,
       `/hud-style.css`, `/graph-data.js` all return `200` and not a `302`. These
       are the most likely breakage, because the galaxy page fetches them from
       the root and any one of them landing on the gated router blanks the page.
-- [ ] `/chat`, `/speak`, `/voices`, `/profiles`, `/hold` still work with no
+- [x] `/chat`, `/speak`, `/voices`, `/profiles`, `/hold` still work with no
       cookie.
-- [ ] `/login` still renders and `POST /login` still sets hud's own cookie, and
-      that cookie alone does not open `/admin` while the gate is in front.
-- [ ] Scale the gate to zero: `/admin` fails to reach the application, `/` still
-      renders. **Fail-closed and the public surface, spec §8.2.**
-- [ ] `kubectl run` a curl pod in the `aivan` namespace and confirm the gate's
-      cluster IP is unreachable except from Traefik. **Acceptance 10.**
-- [ ] A device enrolled for hud, presented to any other host behind the same
-      gate, is refused. **S21.** If no second host exists yet, record that the
-      check is deferred to Phase G and say so.
-- [ ] `X-Aivan-Proof` is `session` in hud's logs for a cookie request.
+- [x] `/login` still renders and `POST /login` still answers its own flow, and
+      a `hud_session` cookie carrying a valid admin `user_id` does not open
+      `/admin` while the gate is in front. A wrong password returns `401`
+      rather than `login requires HTTPS`, which shows `request.ssl?` survives
+      the new middleware hop.
+- [x] Scale the gate to zero: `/admin` fails to reach the application (`500` in
+      14 ms), `/` still renders. **Fail-closed and the public surface, spec
+      §8.2.**
+- [x] A curl pod in the namespace cannot reach the gate's cluster IP or its
+      Service name (connection times out), while the same pod reaches hud
+      normally. **Acceptance 10.**
+- [x] A device enrolled for hud, presented to a second host behind the same
+      gate, is refused with `session_invalid`. Proven with a second gate
+      process on the same database, not a deployed second host; the deployed
+      case stays with Phase G.
+- [x] `X-Aivan-Proof` is `session` in hud's logs for a cookie request.
+
+Also done, and not in the original list: `Accept` had to be added to the
+middleware's `authRequestHeaders`, because without it the gate cannot choose
+between the `401` and the `302` and acceptance 3 fails. See
+`doc/phase-e-record.md` §3.
 
 ## E8. Exit criteria
 
-- [ ] Acceptance 1, 3, 4 and 10 hold, demonstrated with pasted output.
-- [ ] `aivan-hud/doc/auth.md` updated to list the same paths as the public
-      router, including the viewer assets and the auth pages.
-- [ ] The gate has no `Ingress` and is unreachable from a pod.
-- [ ] Two commits: one in `aivan-authz` (deployment + dev-session), one in
-      `aivan-hud` (headers + routing).
-- [ ] `aivan-hud/README_HOME_INSTALL.md` or `doc/auth.md` updated with the three
-      routers, because the install procedure now has a second service in it.
+- [x] Acceptance 1, 3, 4 and 10 hold, demonstrated with pasted output in
+      `doc/phase-e-record.md`.
+- [x] `aivan-hud/doc/auth.md` lists the same paths as the public router,
+      including the viewer assets and the auth pages.
+- [x] The gate has no `Ingress` and is unreachable from a pod.
+- [x] Two commits: one in `aivan-authz` (deployment, roles, dev-session), one in
+      `aivan-hud` (headers, routing, docs).
+- [x] `aivan-hud/README_HOME_INSTALL.md` and `doc/auth.md` describe the three
+      routers and the gate as a second service in the install.
 
 ## Handoff to Phase F
 

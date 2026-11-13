@@ -131,7 +131,11 @@ func (c *Config) crossCheck() error {
 	return nil
 }
 
-// ParseHosts normalises the comma-separated host list.
+// ParseHosts normalises the comma-separated host list. It is exported so the
+// console commands validate --origin against the same list the gate serves.
+func ParseHosts(raw string) ([]string, error) { return parseHosts(raw) }
+
+// parseHosts normalises the comma-separated host list.
 func parseHosts(raw string) ([]string, error) {
 	var hosts []string
 	seen := make(map[string]bool)

@@ -45,6 +45,12 @@ const (
 	sessionClearValue  = SessionCookie + "=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0"
 )
 
+// SessionCookieHeader renders the Set-Cookie value for a minted token. The dev
+// mint uses it too, so the two cannot drift.
+func SessionCookieHeader(token string) string {
+	return strings.Replace(sessionCookieValue, "%s", token, 1)
+}
+
 // HeaderCSRF is the header a page sends when it cannot rely on Sec-Fetch-Site.
 // A custom header is enough because a cross-origin HTML form cannot set one and
 // a cross-origin fetch that tries triggers a preflight Traefik does not answer
@@ -288,7 +294,7 @@ func (g *Gate) mintSession(w http.ResponseWriter, r *http.Request) {
 		"idle_expires_at", exp.Idle.UTC().Format(time.RFC3339),
 		"absolute_expires_at", exp.Absolute.UTC().Format(time.RFC3339))
 
-	w.Header().Set("Set-Cookie", strings.Replace(sessionCookieValue, "%s", token, 1))
+	w.Header().Set("Set-Cookie", SessionCookieHeader(token))
 	// 204 with the identity headers: Phase E's dev mint reads the identity back
 	// from the same headers as a verify, and a body would be a second
 	// representation of what they already say.

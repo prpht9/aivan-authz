@@ -1,39 +1,44 @@
 # aivan-authz: the ingress auth service.
 #
 # Phase C adds /__aivan/verify (forwardAuth) and /__aivan/nonce. Phase D adds
-# /__aivan/session, which is reached on the gate's own router rather than
-# through forwardAuth: a cookie set on a forwardAuth 200 is not delivered to the
-# browser without addAuthCookiesToResponse, and the request would have been
-# consumed as an auth check. No application route is gated by it yet; Phase E
-# wires the middleware into aivan-hud.
+# /__aivan/session, reached on the gate's own router rather than through
+# forwardAuth: a cookie set on a forwardAuth 200 is not delivered to the browser
+# without addAuthCookiesToResponse, and the request would have been consumed as
+# an auth check. Phase E wires the middleware into aivan-hud, so this file and
+# aivan-hud/deploy/routing.yaml are applied together.
 #
-# Apply with kubectl, like the rest of this cluster's dev manifests.
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: aivan
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aivan-authz-db
-  namespace: aivan
-type: Opaque
-stringData:
-  # Placeholder. The real DSN is the aivan_authz service role, never the
-  # migration role and never the application's credential. Replace this before
-  # applying, or create the secret out of band:
-  #   kubectl -n aivan create secret generic aivan-authz-db \
-  #     --from-literal=AIVAN_DB_URL='postgres://aivan_authz@aivan-core-rw.aivan-core.svc/aivan_core'
-  AIVAN_DB_URL: postgres://aivan_authz@REPLACE_ME/aivan_core
----
+# Namespace: Traefik refuses a Service in another namespace than the
+# IngressRoute that names it ("service <ns>/<name> not in the parent resource
+# namespace"), so the gate lives next to the application it guards. AIVAN_NS
+# defaults to aivan; the proof-of-concept install on this cluster uses
+# hermes-agent.
+#
+#   export AIVAN_NS=hermes-agent
+#   envsubst < deploy/k8s.yaml | kubectl apply -f -
+#
+# The Secret aivan-authz-db is not in this file. It holds the runtime
+# credential, and a placeholder in a manifest would overwrite a real secret on
+# the next apply:
+#
+#   kubectl -n "$AIVAN_NS" create secret generic aivan-authz-db \
+#     --from-literal AIVAN_DB_URL='postgres://aivan_authz:<pw>@aivan-core-rw.aivan-core.svc.cluster.local:5432/aivan_core?sslmode=require'
+#
+# The role behind it is created once, out of band, by the install step:
+#
+#   create role aivan_authz login nosuperuser nocreatedb nocreaterole password '<pw>';
+#
+# then `authz migrate` runs as aivan_migrations, which owns schema authz.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: aivan-authz-policy
-  namespace: aivan
+  namespace: ${AIVAN_NS}
 data:
   policy.yaml: |
+    # The gated router catches every path the public router does not name, so
+    # the first matching prefix is what decides. "/" is the default: a path the
+    # router sends through the gate needs any known device. A path missing from
+    # this table would default to the same class and log a warning.
     hosts:
       aivan-hud.home.arpa:
         routes:
@@ -44,10 +49,13 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: aivan-authz
-  namespace: aivan
+  namespace: ${AIVAN_NS}
   labels: { app: aivan-authz }
 spec:
-  replicas: 2
+  # One replica until the session table and the nonce table are shown to be
+  # safe under more. Nothing in the design needs the count, and a single node
+  # has nowhere else to put a second one.
+  replicas: 1
   selector:
     matchLabels: { app: aivan-authz }
   template:
@@ -90,7 +98,7 @@ spec:
             # and one noisy client spends everyone's budget.
             #
             # Observed on this cluster (2026-11-13): the node's podCIDR is
-            # 192.168.196.0/24 and every pod above is in it. Re-check with
+            # 192.168.196.0/24 and every pod is in it. Re-check with
             #   kubectl get nodes -o jsonpath='{.items[0].spec.podCIDR}'
             # if the cluster is rebuilt.
             - name: AIVAN_TRUSTED_PROXY_CIDRS
@@ -114,7 +122,7 @@ spec:
             timeoutSeconds: 2
             failureThreshold: 3
           resources:
-            requests: { cpu: 50m, memory: 32Mi }
+            requests: { cpu: 20m, memory: 32Mi }
             limits:   { cpu: 500m, memory: 128Mi }
           securityContext:
             allowPrivilegeEscalation: false
@@ -130,24 +138,26 @@ apiVersion: v1
 kind: Service
 metadata:
   name: aivan-authz
-  namespace: aivan
+  namespace: ${AIVAN_NS}
 spec:
   selector: { app: aivan-authz }
   ports:
     - { name: http, port: 8080, targetPort: http }
 ---
-# The gate answers forwardAuth and the /__aivan/ endpoints. A direct path to it
-# is a bypass unless a NetworkPolicy admits it, so the policy below admits
-# Traefik and nothing else. Sessions make a second caller legitimate: an
-# operator minting one from a pod in the aivan namespace with `authz
-# list-devices` / `authz revoke` is exactly the console access the design
-# wants. That access needs the aivan-authz Secret rather than a network hole, so
-# the listener stays Traefik-only.
+# No Ingress and no IngressRoute for this Service. It is reached by two callers
+# only: the forwardAuth address, which dials the cluster service, and the gate
+# router on the application's host. A router bound to a host of the gate's own
+# would be a second way in.
+#
+# The NetworkPolicy admits Traefik and nothing else. Sessions make a second
+# caller legitimate, but an operator minting one with `authz dev-session` or
+# `authz revoke` does it with the database secret through a port-forward, which
+# needs no network hole here.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: aivan-authz-ingress
-  namespace: aivan
+  namespace: ${AIVAN_NS}
 spec:
   podSelector:
     matchLabels: { app: aivan-authz }
@@ -166,7 +176,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: aivan-authz-egress
-  namespace: aivan
+  namespace: ${AIVAN_NS}
 spec:
   podSelector:
     matchLabels: { app: aivan-authz }

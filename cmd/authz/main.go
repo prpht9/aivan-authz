@@ -57,10 +57,21 @@ func run(args []string) error {
 		usage()
 		return nil
 	default:
+		if fn, ok := extraCommands[args[0]]; ok {
+			return fn(os.Stdout, args[1:])
+		}
 		usage()
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
 }
+
+// extraCommands is where a build-tagged subcommand registers itself. It is
+// empty in the shipped build: the image is built without the devtools tag, so
+// nothing can reach the dev mint through the binary the cluster runs.
+var extraCommands = map[string]func(io.Writer, []string) error{}
+
+// extraUsage adds a line to the usage text for each registered subcommand.
+var extraUsage []string
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: authz <command>
@@ -70,6 +81,9 @@ commands:
   migrate                        apply the schema migrations
   list-devices --username <name> list a person's devices
   revoke --device <uuid>         revoke a device and every session it holds`)
+	for _, line := range extraUsage {
+		fmt.Fprintln(os.Stderr, line)
+	}
 }
 
 // consoleContext bounds a console command the way migrate is bounded: a

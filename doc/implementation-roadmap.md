@@ -55,10 +55,10 @@ outside the phase files themselves.
 | Phase | Status | Commit |
 |---|---|---|
 | A | complete — `doc/traefik-contract.md`, spec revision 3 | |
-| B | not started | |
-| C | not started | |
-| D | not started | |
-| E | not started | |
+| B | complete — `doc/phase-b-record.md` | |
+| C | complete — `doc/phase-c-record.md` | |
+| D | complete — `doc/phase-d-record.md` | |
+| E | complete — `doc/phase-e-record.md` | |
 | F | not started | |
 | G | not started | |
 
