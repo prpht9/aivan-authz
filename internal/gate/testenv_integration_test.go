@@ -174,6 +174,7 @@ func newEnvWithLog(t testing.TB, sink io.Writer) *env {
 		SessionMax:  8 * time.Hour,
 		Counter:     counter,
 		Now:         func() time.Time { return e.now },
+		Page:        gate.EmbeddedPage(),
 	})
 	if err != nil {
 		t.Fatalf("gate.New: %v", err)
@@ -184,6 +185,8 @@ func newEnvWithLog(t testing.TB, sink io.Writer) *env {
 	mux.HandleFunc("/__aivan/verify", g.Verify)
 	mux.HandleFunc("/__aivan/nonce", g.Nonce)
 	mux.HandleFunc("/__aivan/session", g.Session)
+	mux.HandleFunc(gate.EnrollPath, g.Enroll)
+	mux.HandleFunc("/__aivan/enroll/", g.EnrollAsset)
 	e.server = httptest.NewServer(mux)
 	t.Cleanup(e.server.Close)
 
@@ -204,13 +207,17 @@ func testTable(t testing.TB) *policy.Table {
 	tbl, err := policy.New(map[string]policy.Host{
 		testHost: {
 			Routes: []policy.Route{
+				{Prefix: policy.EnrollmentPrefix, Class: policy.ClassEnrollment},
 				{Prefix: "/", Class: policy.ClassAuthenticated},
 				{Prefix: "/admin", Class: policy.ClassAdmin},
 				{Prefix: "/open", Class: policy.ClassPublic},
 			},
 		},
 		"second.home.arpa": {
-			Routes: []policy.Route{{Prefix: "/", Class: policy.ClassAuthenticated}},
+			Routes: []policy.Route{
+				{Prefix: policy.EnrollmentPrefix, Class: policy.ClassEnrollment},
+				{Prefix: "/", Class: policy.ClassAuthenticated},
+			},
 		},
 	})
 	if err != nil {

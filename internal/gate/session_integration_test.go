@@ -119,8 +119,8 @@ func TestMintCookieHeaderIsExact(t *testing.T) {
 		}
 	}
 
-	// The identity comes back on the 204, which is what Phase E's dev mint
-	// reads.
+	// The identity comes back on the 204, and it is what a verify of the new
+	// cookie returns.
 	for k, want := range map[string]string{
 		gate.HeaderUserID:   fmt.Sprintf("%d", userAlice),
 		gate.HeaderUser:     "alice",

@@ -577,14 +577,19 @@ test host.
 
 ### Phase F — enrollment
 
-- [ ] `authz enroll-new --username <name> --origin <host> --kind <kind>`
+Complete, with the deviations recorded in `doc/phase-f-record.md`. Two of them
+change what the specification says: the code is 26 Crockford characters from 16
+bytes (the plan's "32 characters" is unreachable at that entropy), and ES256
+accepts both the raw `r||s` form browsers emit and the DER form Phase C assumed.
+
+- [x] `authz enroll-new --username <name> --origin <host> --kind <kind>`
       printing a code once, refusing when that person already has an active
       device of that kind on that origin.
-- [ ] `GET /__aivan/enroll` page and `POST /__aivan/enroll` per §5.7.
-- [ ] Shared canonical vectors exercised from the browser test.
-- [ ] Tests S9, S10, S11, including a captured-POST key swap and a replayed
+- [x] `GET /__aivan/enroll` page and `POST /__aivan/enroll` per §5.7.
+- [x] Shared canonical vectors exercised from the browser test.
+- [x] Tests S9, S10, S11, including a captured-POST key swap and a replayed
       claim.
-- [ ] Remove the Phase E dev mint from the shipped build.
+- [x] Remove the Phase E dev mint from the shipped build.
 
 **Exit:** acceptance 2 in a real browser on the cluster, from an empty profile;
 wrong code, expired record, and a second claim of the same record are all

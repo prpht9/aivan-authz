@@ -38,8 +38,12 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if len(applied) != 2 {
-		t.Fatalf("applied = %v, want two versions", applied)
+	want, err := store.Migrations()
+	if err != nil {
+		t.Fatalf("Migrations: %v", err)
+	}
+	if len(applied) != len(want) {
+		t.Fatalf("applied = %v, want all %d versions", applied, len(want))
 	}
 
 	for _, table := range []string{
@@ -60,8 +64,8 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if err := pool.QueryRow(ctx, `select count(*) from authz.schema_migrations`).Scan(&versions); err != nil {
 		t.Fatalf("count versions: %v", err)
 	}
-	if versions != 2 {
-		t.Fatalf("recorded %d versions, want 2", versions)
+	if versions != len(want) {
+		t.Fatalf("recorded %d versions, want %d", versions, len(want))
 	}
 
 	again, err := store.Migrate(ctx, pool)
@@ -151,7 +155,11 @@ func TestMigrateIsSerialised(t *testing.T) {
 	if err := pools[0].QueryRow(ctx, `select count(*) from authz.schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("recorded %d versions, want 2", n)
+	want, err := store.Migrations()
+	if err != nil {
+		t.Fatalf("Migrations: %v", err)
+	}
+	if n != len(want) {
+		t.Fatalf("recorded %d versions, want %d", n, len(want))
 	}
 }

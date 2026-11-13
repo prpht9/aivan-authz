@@ -26,6 +26,9 @@ const (
 	Ed25519PublicKeySize = ed25519.PublicKeySize
 	Ed25519SignatureSize = ed25519.SignatureSize
 	P256PublicKeySize    = 65
+	// P256SignatureRawSize is r||s with each integer left-padded to 32 bytes,
+	// which is the form WebCrypto emits on the browsers Phase F tested.
+	P256SignatureRawSize = 64
 )
 
 var (
@@ -51,11 +54,44 @@ func Supported(alg string) bool {
 	}
 }
 
+// ValidatePublicKey reports whether key is a public key of alg's wire size. It
+// is the shape check an enrollment claim runs before any database work: a key
+// of the wrong length is a malformed request, which is a different answer from
+// a claim that does not match a record.
+func ValidatePublicKey(alg string, key []byte) error {
+	switch Algorithm(alg) {
+	case AlgorithmEd25519:
+		if len(key) != Ed25519PublicKeySize {
+			return ErrMalformedKey
+		}
+	case AlgorithmES256:
+		// An uncompressed P-256 point, which is what exportKey('raw') emits
+		// and what ParseUncompressedPublicKey accepts. The point must also be
+		// on the curve: a 65-byte string is not automatically a key.
+		if len(key) != P256PublicKeySize {
+			return ErrMalformedKey
+		}
+		if _, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), key); err != nil {
+			return ErrMalformedKey
+		}
+	default:
+		return ErrUnsupportedAlgorithm
+	}
+	return nil
+}
+
 // Verify checks signature over message with publicKey under alg.
 //
-// The ES256 wire format is ASN.1 DER, because that is what WebCrypto's
-// sign({name:'ECDSA',hash:'SHA-256'}) emits. A raw r||s signature is refused:
-// accepting both encodings would leave one of them untested.
+// The ES256 wire format is what WebCrypto's sign({name:'ECDSA',hash:'SHA-256'})
+// emits. Both encodings it can emit are accepted, and they are told apart by
+// length alone: exactly 64 bytes is a raw r||s pair, and anything else must be
+// ASN.1 DER. There is no ambiguity because a DER SEQUENCE of two 32-byte
+// integers is never 64 bytes long.
+//
+// Phase F observed the browser half of this: Chromium 158 and Firefox 153 both
+// emit raw r||s (32+32) from subtle.sign, not the DER that an older reading of
+// the spec suggested. A gate that accepted only DER would refuse every browser
+// ES256 proof, so both are accepted and both are tested.
 func Verify(alg string, publicKey, message, signature []byte) error {
 	switch Algorithm(alg) {
 	case AlgorithmEd25519:
@@ -75,16 +111,28 @@ func Verify(alg string, publicKey, message, signature []byte) error {
 		if err != nil {
 			return ErrMalformedKey
 		}
-		// Parse the DER pair explicitly so a malformed encoding and a wrong
-		// signature are told apart. A raw r||s value fails here.
-		var sig struct{ R, S *big.Int }
-		if rest, err := asn1.Unmarshal(signature, &sig); err != nil || len(rest) != 0 {
+
+		var r, s *big.Int
+		if len(signature) == P256SignatureRawSize {
+			r = new(big.Int).SetBytes(signature[:P256SignatureRawSize/2])
+			s = new(big.Int).SetBytes(signature[P256SignatureRawSize/2:])
+		} else {
+			// Parse the DER pair explicitly so a malformed encoding and a
+			// wrong signature are told apart.
+			var sig struct{ R, S *big.Int }
+			if rest, err := asn1.Unmarshal(signature, &sig); err != nil || len(rest) != 0 {
+				return ErrMalformedSignature
+			}
+			r, s = sig.R, sig.S
+		}
+		if r == nil || s == nil || r.Sign() <= 0 || s.Sign() <= 0 {
 			return ErrMalformedSignature
 		}
+
 		// ECDSA verifies a digest, and WebCrypto's sign({hash:'SHA-256'})
 		// hashes the message before signing it.
 		digest := sha256.Sum256(message)
-		if sig.R == nil || sig.S == nil || !ecdsa.Verify(pub, digest[:], sig.R, sig.S) {
+		if !ecdsa.Verify(pub, digest[:], r, s) {
 			return ErrInvalidSignature
 		}
 		return nil

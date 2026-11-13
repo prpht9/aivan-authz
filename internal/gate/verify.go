@@ -51,6 +51,11 @@ type Options struct {
 	// the package constants, which is what production uses.
 	RatePerMinute int
 	RateBurst     int
+
+	// Page is the embedded enrollment page. A nil Page mounts the routes but
+	// answers 404, which is what a test that does not build the web directory
+	// wants; a shipped binary always has one.
+	Page *PageSource
 }
 
 // Gate decides requests. It is safe for concurrent use: the policy table is
@@ -75,6 +80,7 @@ type Gate struct {
 	TrustedProxies []*net.IPNet
 	counter        *store.Counter
 	now            func() time.Time
+	page           *PageSource
 
 	limiter *rateLimiter
 	maint   maintainer
@@ -126,6 +132,7 @@ func New(o Options) (*Gate, error) {
 		TrustedProxies: o.TrustedProxies,
 		counter:        o.Counter,
 		now:            o.Now,
+		page:           o.Page,
 	}
 	if o.RatePerMinute == 0 {
 		o.RatePerMinute = NonceRatePerMinute

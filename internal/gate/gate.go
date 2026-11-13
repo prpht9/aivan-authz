@@ -94,6 +94,15 @@ const (
 	ReasonCSRFMissing    Reason = "csrf_missing"
 	ReasonCSRFSite       Reason = "csrf_samesite"
 	ReasonPublicRoute    Reason = "public_route"
+
+	// Enrollment reasons. The one the client sees is ReasonEnrollRefused in
+	// every case; the others are what the decision log records for an operator.
+	ReasonEnrollClaimed   Reason = "claimed"
+	ReasonEnrollRefused   Reason = "enroll_refused"
+	ReasonEnrollDuplicate Reason = "enroll_duplicate"
+	ReasonEnrollExpired   Reason = "enroll_expired"
+	ReasonEnrollCode      Reason = "enroll_bad_code"
+	ReasonEnrollOrigin    Reason = "enroll_wrong_origin"
 )
 
 // IsDenial returns the reason for err when err is one of the denial reasons
@@ -161,6 +170,12 @@ func CheckClass(id *identity, c policy.Class) error {
 			return deny(ReasonRoleInsufficient)
 		}
 		return nil
+	case policy.ClassEnrollment:
+		// The claim route proves possession of a key with a signature over a
+		// pending record, which is not an identity and cannot be carried in
+		// one. Reaching this decision with a device identity therefore means
+		// the request came in on a path the class was not meant for.
+		return deny(ReasonNoProof)
 	default:
 		// An unknown class is a policy bug; refusing is the safe direction.
 		return deny(ReasonRoleInsufficient)

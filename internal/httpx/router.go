@@ -57,7 +57,16 @@ func NewRouterWith(o RouterOptions) http.Handler {
 		// so they live on this router like the others and the handler decides
 		// POST from DELETE.
 		mux.HandleFunc("/__aivan/session", o.Gate.Session)
+		// Enrollment: the page and the claim on one prefix. The claim is the
+		// only unauthenticated write path this service has, and the policy
+		// class that permits it is pinned to this prefix (policy.New).
+		mux.HandleFunc(gate.EnrollPath, o.Gate.Enroll)
+		mux.HandleFunc("/__aivan/enroll/", o.Gate.EnrollAsset)
 	}
+
+	// Dev-only routes are mounted by their own file, which is built only with
+	// the devtools tag. The shipped image has none of them.
+	registerDevRoutes(mux)
 
 	var h http.Handler = mux
 	h = accessLog(o.Log)(h)

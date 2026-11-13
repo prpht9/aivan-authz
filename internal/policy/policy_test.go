@@ -150,8 +150,9 @@ func TestRefusals(t *testing.T) {
 		host Host
 		want error
 	}{
-		{"unknown class", Host{Routes: []Route{{Prefix: "/", Class: Class("enrollment")}}}, ErrUnknownClass},
+		{"unknown class", Host{Routes: []Route{{Prefix: "/", Class: Class("operator")}}}, ErrUnknownClass},
 		{"empty class", Host{Routes: []Route{{Prefix: "/", Class: Class("")}}}, ErrUnknownClass},
+		{"enrollment off its prefix", Host{Routes: []Route{{Prefix: "/", Class: ClassEnrollment}}}, ErrEnrollmentPrefix},
 		{"prefix without slash", Host{Routes: []Route{{Prefix: "admin", Class: ClassAdmin}}}, ErrBadPrefix},
 		{"non-https scheme", Host{Scheme: "http", Routes: []Route{{Prefix: "/", Class: ClassAdmin}}}, nil},
 	}

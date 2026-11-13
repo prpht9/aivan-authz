@@ -19,12 +19,22 @@ const (
 	ClassAuthenticated Class = "authenticated"
 	// ClassAdmin needs the same plus the admin role.
 	ClassAdmin Class = "admin"
+	// ClassEnrollment is the claim's own class: no user proof, only a body
+	// carrying a signed pending-enrollment claim. It is valid on one prefix
+	// (EnrollmentPrefix) and nowhere else, because a class that accepts an
+	// unauthenticated body is a hole everywhere it is not the point.
+	ClassEnrollment Class = "enrollment"
 )
+
+// EnrollmentPrefix is the one path an enrollment class may be declared on. It
+// matches the gate's own router, which is the only place the claim is served
+// (plan §5.7, spec §6.2).
+const EnrollmentPrefix = "/__aivan/enroll"
 
 // Known reports whether c is a class this phase understands.
 func Known(c Class) bool {
 	switch c {
-	case ClassPublic, ClassAuthenticated, ClassAdmin:
+	case ClassPublic, ClassAuthenticated, ClassAdmin, ClassEnrollment:
 		return true
 	default:
 		return false
@@ -80,6 +90,10 @@ var (
 	ErrBadPrefix = errors.New("policy: prefix must start with /")
 	// ErrUnknownClass means a class this phase does not implement.
 	ErrUnknownClass = errors.New("policy: unknown class")
+	// ErrEnrollmentPrefix means an enrollment route was declared somewhere
+	// other than EnrollmentPrefix. The class exists for one endpoint; a
+	// second use of it would be a second unauthenticated write path.
+	ErrEnrollmentPrefix = errors.New("policy: enrollment class is only valid on " + EnrollmentPrefix)
 	// ErrScheme means a host is configured with a scheme other than https.
 	ErrScheme = errors.New("policy: scheme must be https")
 )
@@ -132,6 +146,13 @@ func New(hosts map[string]Host) (*Table, error) {
 			}
 			if seen[r.Prefix] {
 				return nil, failf(ErrDuplicatePrefix, "policy host %q has prefix %q more than once", host, r.Prefix)
+			}
+			// The enrollment class accepts a body with no user proof, so it is
+			// pinned to the one endpoint that needs it (spec §6.2, plan §5.7).
+			if r.Class == ClassEnrollment && r.Prefix != EnrollmentPrefix {
+				return nil, failf(ErrEnrollmentPrefix,
+					"policy host %q declares class %q on %q, which is not %s",
+					host, r.Class, r.Prefix, EnrollmentPrefix)
 			}
 			seen[r.Prefix] = true
 			routes = append(routes, r)

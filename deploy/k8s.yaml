@@ -39,11 +39,17 @@ data:
     # the first matching prefix is what decides. "/" is the default: a path the
     # router sends through the gate needs any known device. A path missing from
     # this table would default to the same class and log a warning.
+    #
+    # /__aivan/enroll is the one prefix with the enrollment class. It accepts a
+    # body with no user proof because the claim carries its own: a signature
+    # over a pending record's code. The class is pinned to this prefix by
+    # policy.New, so a second use of it is a refusal at startup.
     hosts:
       aivan-hud.home.arpa:
         routes:
-          - { prefix: /admin, class: admin }
-          - { prefix: /,      class: authenticated }
+          - { prefix: /__aivan/enroll, class: enrollment }
+          - { prefix: /admin,          class: admin }
+          - { prefix: /,               class: authenticated }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -149,9 +155,9 @@ spec:
 # router on the application's host. A router bound to a host of the gate's own
 # would be a second way in.
 #
-# The NetworkPolicy admits Traefik and nothing else. Sessions make a second
-# caller legitimate, but an operator minting one with `authz dev-session` or
-# `authz revoke` does it with the database secret through a port-forward, which
+# The NetworkPolicy admits Traefik and nothing else. An operator minting an
+# enrollment with `authz enroll-new --username … --origin … --kind browser`
+# does it with the database secret through a port-forward, which
 # needs no network hole here.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

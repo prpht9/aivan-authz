@@ -295,9 +295,9 @@ func (g *Gate) mintSession(w http.ResponseWriter, r *http.Request) {
 		"absolute_expires_at", exp.Absolute.UTC().Format(time.RFC3339))
 
 	w.Header().Set("Set-Cookie", SessionCookieHeader(token))
-	// 204 with the identity headers: Phase E's dev mint reads the identity back
-	// from the same headers as a verify, and a body would be a second
-	// representation of what they already say.
+	// 204 with the identity headers, which are exactly what a verify of the new
+	// cookie would return. A body would be a second representation of the same
+	// facts.
 	g.allow(w, r, f, m, &identity{
 		UserID:     id.UserID,
 		Username:   id.Username,

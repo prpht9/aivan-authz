@@ -1,7 +1,9 @@
 // Command authz is the AIVan ingress auth service.
 //
-// Subcommands in this phase: serve, migrate. Later phases add enroll-new,
-// revoke and list-devices.
+// Subcommands: serve, migrate, enroll-new, list-devices, revoke. The console
+// commands are subcommands of this binary and not routes, which is what makes
+// them operator-only: reaching one needs a shell on a machine holding the
+// database credential.
 package main
 
 import (
@@ -53,25 +55,16 @@ func run(args []string) error {
 		return listDevices(os.Stdout, args[1:])
 	case "revoke":
 		return revoke(os.Stdout, args[1:])
+	case "enroll-new":
+		return enrollNew(os.Stdout, args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
 	default:
-		if fn, ok := extraCommands[args[0]]; ok {
-			return fn(os.Stdout, args[1:])
-		}
 		usage()
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
 }
-
-// extraCommands is where a build-tagged subcommand registers itself. It is
-// empty in the shipped build: the image is built without the devtools tag, so
-// nothing can reach the dev mint through the binary the cluster runs.
-var extraCommands = map[string]func(io.Writer, []string) error{}
-
-// extraUsage adds a line to the usage text for each registered subcommand.
-var extraUsage []string
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: authz <command>
@@ -79,11 +72,10 @@ func usage() {
 commands:
   serve                          run the gate
   migrate                        apply the schema migrations
+  enroll-new --username <name> --origin <host> --kind <kind>
+                                 mint a one-time enrollment code, printed once
   list-devices --username <name> list a person's devices
   revoke --device <uuid>         revoke a device and every session it holds`)
-	for _, line := range extraUsage {
-		fmt.Fprintln(os.Stderr, line)
-	}
 }
 
 // consoleContext bounds a console command the way migrate is bounded: a
@@ -122,6 +114,70 @@ func listDevices(out io.Writer, args []string) error {
 		return fmt.Errorf("list devices: %w", err)
 	}
 	return console.WriteDevices(out, devices)
+}
+
+// enrollNew mints one pending enrollment and prints its code once. The origin
+// is validated against AIVAN_HOSTS here, so the console and the gate agree on
+// the set of hosts a record can name.
+func enrollNew(out io.Writer, args []string) error {
+	opts, err := parseFlags(args, []string{"--username", "--origin", "--kind"})
+	if err != nil {
+		return err
+	}
+
+	origin, ok := opts["--origin"]
+	if !ok || strings.TrimSpace(origin) == "" {
+		return errors.New("usage: enroll-new --username <name> --origin <host> --kind <kind>")
+	}
+	hosts, err := config.ParseHosts(os.Getenv("AIVAN_HOSTS"))
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := consoleContext()
+	defer cancel()
+
+	pool, err := consolePool(ctx)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	res, err := console.Enroll(ctx, pool.Pool, console.EnrollOptions{
+		Username: opts["--username"],
+		Origin:   strings.ToLower(strings.TrimSpace(origin)),
+		Kind:     opts["--kind"],
+	}, hosts, console.OperatorName())
+	if err != nil {
+		return fmt.Errorf("enroll-new: %w", err)
+	}
+	return console.WriteEnroll(out, res)
+}
+
+// parseFlags reads a fixed set of --name value pairs. An unknown flag is an
+// error rather than a command that silently did nothing, and a repeated flag is
+// refused so the last value cannot win by accident.
+func parseFlags(args []string, allowed []string) (map[string]string, error) {
+	out := make(map[string]string, len(allowed))
+	permitted := make(map[string]bool, len(allowed))
+	for _, name := range allowed {
+		permitted[name] = true
+	}
+	for i := 0; i < len(args); i++ {
+		name := args[i]
+		if !permitted[name] {
+			return nil, fmt.Errorf("unknown flag %q; expected %s", name, strings.Join(allowed, ", "))
+		}
+		if i+1 >= len(args) {
+			return nil, fmt.Errorf("%s needs a value", name)
+		}
+		if _, seen := out[name]; seen {
+			return nil, fmt.Errorf("%s given more than once", name)
+		}
+		out[name] = args[i+1]
+		i++
+	}
+	return out, nil
 }
 
 // revoke revokes one device and reports how many sessions it killed.
@@ -241,6 +297,7 @@ func serve(log *slog.Logger) error {
 		MaxBody:        cfg.MaxBody,
 		TrustedProxies: cfg.TrustedProxies,
 		Counter:        counter,
+		Page:           gate.EmbeddedPage(),
 	})
 	if err != nil {
 		return fmt.Errorf("refusing to start: %w", err)

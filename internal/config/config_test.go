@@ -18,6 +18,17 @@ hosts:
       - { prefix: /,      class: authenticated }
 `
 
+// pinnedEnrollment is the policy the deployment runs once enrollment exists:
+// the claim's class on its one prefix, and the ordinary classes under it.
+const pinnedEnrollmentPolicy = `
+hosts:
+  aivan-hud.home.arpa:
+    routes:
+      - { prefix: /__aivan/enroll, class: enrollment }
+      - { prefix: /admin,          class: admin }
+      - { prefix: /,               class: authenticated }
+`
+
 // writePolicy writes a policy file into a temp dir and returns its path.
 func writePolicy(t *testing.T, body string) string {
 	t.Helper()
@@ -87,9 +98,14 @@ func TestRefusals(t *testing.T) {
 hosts:
   aivan-hud.home.arpa:
     routes:
+      - { prefix: /enroll, class: operator }
+`)
+	enrollmentClass := writePolicy(t, `
+hosts:
+  aivan-hud.home.arpa:
+    routes:
       - { prefix: /enroll, class: enrollment }
 `)
-	enrollmentClass := unknownClass
 	notListed := writePolicy(t, `
 hosts:
   other.home.arpa:
@@ -157,12 +173,12 @@ hosts:
 		{
 			name:    "unknown class",
 			env:     map[string]string{"AIVAN_POLICY": unknownClass},
-			wantSub: `unknown class "enrollment"`,
+			wantSub: `unknown class "operator"`,
 		},
 		{
-			name:    "enrollment class refused until phase f",
+			name:    "enrollment class on the wrong prefix",
 			env:     map[string]string{"AIVAN_POLICY": enrollmentClass},
-			wantSub: "unknown class",
+			wantSub: `declares class "enrollment" on "/enroll", which is not /__aivan/enroll`,
 		},
 		{
 			name: "route with no class",
@@ -265,6 +281,9 @@ func TestBoundariesAccepted(t *testing.T) {
 		{"multi host", map[string]string{
 			"AIVAN_HOSTS":  "aivan-hud.home.arpa, AIVAN-HUD.home.arpa, second.home.arpa",
 			"AIVAN_POLICY": writePolicy(t, goodPolicy),
+		}},
+		{"enrollment class on its own prefix", map[string]string{
+			"AIVAN_POLICY": writePolicy(t, pinnedEnrollmentPolicy),
 		}},
 	}
 	for _, tc := range cases {

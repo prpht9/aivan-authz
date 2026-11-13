@@ -97,9 +97,13 @@ func TestES256Verifies(t *testing.T) {
 	}
 }
 
-// TestES256RejectsRawSignature is C8's explicit item: the wire format is DER,
-// and r||s is refused rather than also accepted.
-func TestES256RejectsRawSignature(t *testing.T) {
+// TestES256AcceptsRawSignature is the Phase F amendment to C8. The wire format
+// was designed as DER, and Chromium 158 and Firefox 153 both emit raw r||s from
+// subtle.sign (observed 2026-11-13). A gate that refused r||s would refuse
+// every browser's ES256 proof, which is the fallback the page relies on when
+// Ed25519 is unavailable. Both encodings verify, and the length tells them
+// apart: a DER SEQUENCE of two 32-byte integers is never 64 bytes.
+func TestES256AcceptsRawSignature(t *testing.T) {
 	priv, pub := es256Key(t)
 	msg := []byte("canonical request")
 	digest := sha256Bytes(msg)
@@ -108,13 +112,38 @@ func TestES256RejectsRawSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	raw := make([]byte, 64)
+	raw := make([]byte, P256SignatureRawSize)
 	r.FillBytes(raw[:32])
 	s.FillBytes(raw[32:])
 
-	err = Verify(string(AlgorithmES256), pub, msg, raw)
-	if !errors.Is(err, ErrMalformedSignature) {
-		t.Fatalf("raw r||s: err = %v, want ErrMalformedSignature", err)
+	if err := Verify(string(AlgorithmES256), pub, msg, raw); err != nil {
+		t.Fatalf("raw r||s: err = %v, want nil", err)
+	}
+	// The raw form is checked against the message, not merely decoded.
+	if err := Verify(string(AlgorithmES256), pub, []byte("other"), raw); !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("raw r||s over another message: err = %v, want ErrInvalidSignature", err)
+	}
+	// A 64-byte value that is not a valid pair is malformed, not a panic.
+	if err := Verify(string(AlgorithmES256), pub, msg, make([]byte, P256SignatureRawSize)); !errors.Is(err, ErrMalformedSignature) {
+		t.Fatalf("zero r||s: err = %v, want ErrMalformedSignature", err)
+	}
+}
+
+// TestES256RejectsShortRawSignature: a truncated raw pair is not a DER pair
+// either, so it is malformed.
+func TestES256RejectsShortRawSignature(t *testing.T) {
+	priv, pub := es256Key(t)
+	msg := []byte("m")
+	digest := sha256Bytes(msg)
+	r, s, err := ecdsa.Sign(rand.Reader, priv, digest)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	raw := make([]byte, P256SignatureRawSize)
+	r.FillBytes(raw[:32])
+	s.FillBytes(raw[32:])
+	if err := Verify(string(AlgorithmES256), pub, msg, raw[:63]); !errors.Is(err, ErrMalformedSignature) {
+		t.Fatalf("truncated raw: err = %v, want ErrMalformedSignature", err)
 	}
 }
 

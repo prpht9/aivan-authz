@@ -10,6 +10,8 @@ const (
 	StmtSessionMint   = "aivan_session_mint"
 	StmtSessionRead   = "aivan_session_read"
 	StmtSessionDelete = "aivan_session_delete"
+	StmtEnrollClaim   = "aivan_enroll_claim"
+	StmtEnrollDevice  = "aivan_enroll_device"
 )
 
 // VerifySQL consumes a nonce and returns everything the gate needs to decide,
@@ -123,6 +125,47 @@ select d.id, d.revoked_at, d.user_id, d.kind,
 // idempotent: a token that matches no row deletes nothing and is not an error.
 const SessionDeleteSQL = `delete from authz.sessions where token_hash = $1`
 
+// EnrollClaimSQL consumes a pending enrollment and names the user it was
+// minted for. It is the whole authorization decision for a claim: the code
+// digest, the origin and "not yet claimed, not yet expired" are all predicates,
+// and the update returns a row only when every one held.
+//
+// The device id is passed in because the row records who claimed it, and the
+// device is inserted in the same transaction. A concurrent second claim updates
+// nothing — claimed_at is no longer null — so it returns no row and inserts no
+// device (S9, S10, S11).
+//
+// user_id lives here and nowhere in the request. The claiming device never
+// asserts its identity; the record names it. The record id is returned so the
+// audit row can name the record the claim consumed.
+const EnrollClaimSQL = `
+update authz.pending_enrollments
+   set claimed_at = now(), claimed_device_id = $1
+ where code_hash = $2
+   and origin    = $3
+   and claimed_at is null
+   and expires_at > now()
+returning id, user_id, origin, kind`
+
+// EnrollDeviceSQL inserts the device a claim produced. The origin, kind and
+// user come from the claimed record rather than from the request, so the device
+// cannot be created for a user or host the console did not name.
+//
+// The partial unique index on (user_id, origin, kind) refuses a second live
+// device of one kind. That is a console refusal at mint time, but a race
+// between two claims for two different records of the same kind could still
+// reach it; the caller maps the unique violation to a refusal.
+const EnrollDeviceSQL = `
+insert into authz.devices (id, user_id, origin, name, kind, public_key, alg)
+values ($1, $2, $3, $4, $5, $6, $7)
+returning created_at`
+
+// EnrollAuditSQL records a claim. The actor is the device it created; the
+// console's mint writes the operator's OS user in the same columns.
+const EnrollAuditSQL = `
+insert into authz.audit_log (user_id, device_id, host, route, decision, reason, request_id, subject_id)
+values ($1, $2, $3, '/__aivan/enroll', 'enroll', 'claimed', $4, $5)`
+
 // GateStatements is the list NewConnection prepares. Ordering is irrelevant;
 // the names are the contract.
 func GateStatements() []Statement {
@@ -134,5 +177,7 @@ func GateStatements() []Statement {
 		{Name: StmtSessionMint, SQL: SessionMintSQL},
 		{Name: StmtSessionRead, SQL: SessionReadSQL},
 		{Name: StmtSessionDelete, SQL: SessionDeleteSQL},
+		{Name: StmtEnrollClaim, SQL: EnrollClaimSQL},
+		{Name: StmtEnrollDevice, SQL: EnrollDeviceSQL},
 	}
 }

@@ -1,0 +1,44 @@
+[
+  {
+    "name": "es256 with a dashed lowercase code",
+    "code": "k7qm-3xzp-9wrt-4nbh-k7qm-3xzp-9x",
+    "alg": "es256",
+    "public_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+    "expected": "aivan-enroll-v1\nK7QM3XZP9WRT4NBHK7QM3XZP9X\nes256\nAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+  },
+  {
+    "name": "ed25519 with a clean uppercase code",
+    "code": "ABCDEFGHJKMNPQRSTVWXYZ0123",
+    "alg": "ed25519",
+    "public_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+    "expected": "aivan-enroll-v1\nABCDEFGHJKMNPQRSTVWXYZ0123\ned25519\nAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+  },
+  {
+    "name": "confusable characters read as digits",
+    "code": "il0o-il0o-il0o-il0o-il0o-il0o-il",
+    "alg": "es256",
+    "public_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+    "expected": "aivan-enroll-v1\n11001100110011001100110011\nes256\nAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+  },
+  {
+    "name": "short key",
+    "code": "0123456789ABCDEFGHJKMNPQRS",
+    "alg": "es256",
+    "public_key": "AAECAw",
+    "expected": "aivan-enroll-v1\n0123456789ABCDEFGHJKMNPQRS\nes256\nAAECAw"
+  },
+  {
+    "name": "empty key",
+    "code": "0123456789ABCDEFGHJKMNPQRS",
+    "alg": "ed25519",
+    "public_key": "",
+    "expected": "aivan-enroll-v1\n0123456789ABCDEFGHJKMNPQRS\ned25519\n"
+  },
+  {
+    "name": "base64url with padding characters",
+    "code": "0123456789ABCDEFGHJKMNPQRS",
+    "alg": "es256",
+    "public_key": "AAECAw==",
+    "expected": "aivan-enroll-v1\n0123456789ABCDEFGHJKMNPQRS\nes256\nAAECAw=="
+  }
+]
