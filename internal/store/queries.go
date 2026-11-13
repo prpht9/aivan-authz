@@ -3,10 +3,13 @@ package store
 // Prepared statement names. They are exported so tests can assert that the
 // gate executes them by name rather than by re-sending SQL.
 const (
-	StmtVerify  = "aivan_verify"
-	StmtNonce   = "aivan_nonce_insert"
-	StmtPurge   = "aivan_nonce_purge"
-	StmtCountID = "aivan_nonce_count"
+	StmtVerify        = "aivan_verify"
+	StmtNonce         = "aivan_nonce_insert"
+	StmtPurge         = "aivan_nonce_purge"
+	StmtCountID       = "aivan_nonce_count"
+	StmtSessionMint   = "aivan_session_mint"
+	StmtSessionRead   = "aivan_session_read"
+	StmtSessionDelete = "aivan_session_delete"
 )
 
 // VerifySQL consumes a nonce and returns everything the gate needs to decide,
@@ -60,6 +63,66 @@ const PurgeSQL = `delete from authz.nonces where expires_at < now()`
 // NonceCountSQL counts the nonce table, for the table cap.
 const NonceCountSQL = `select count(*) from authz.nonces`
 
+// SessionMintSQL inserts one session and stamps the device's last_seen_at in
+// the same statement, so the one write per session lifetime also answers "when
+// was this device last used".
+//
+// The device row is the source of the insert. A device that is missing, bound
+// to another origin, or revoked between the proof check and this statement
+// produces no update, so the insert selects nothing and the statement returns
+// no row. That is a denial on the same path as a failed lookup.
+const SessionMintSQL = `
+with device as (
+  update authz.devices
+     set last_seen_at = now()
+   where id = $2
+     and origin = $3
+     and revoked_at is null
+  returning id
+)
+insert into authz.sessions (token_hash, device_id, idle_expires_at, absolute_expires_at)
+select $1, d.id, now() + $4, now() + $5
+  from device d
+returning idle_expires_at, absolute_expires_at`
+
+// SessionReadSQL authenticates one cookie and returns everything the decision
+// needs, in one statement.
+//
+// The idle expiry is pushed forward only when it would move by more than the
+// window, so a busy session writes once a minute at most and a quiet one never
+// writes. An expired session updates no row, so it returns no row.
+//
+// The join is through authz.devices, which is what makes a revoke effective on
+// the next request (S5): the row still exists, revoked_at is set, and the
+// caller denies. The origin predicate keeps a session minted on one host from
+// authenticating another even though the __Host- cookie already cannot cross
+// hosts.
+const SessionReadSQL = `
+with touched as (
+  update authz.sessions s
+     set idle_expires_at = case
+           when now() + $2 > s.idle_expires_at + interval '60 seconds'
+           then now() + $2 else s.idle_expires_at end
+   where s.token_hash = $1
+     and s.idle_expires_at > now()
+     and s.absolute_expires_at > now()
+  returning s.device_id
+)
+select d.id, d.revoked_at, d.user_id, d.kind,
+       u.username, u.active,
+       coalesce(array_agg(g.name order by g.name)
+                filter (where g.name is not null), '{}') as roles
+  from touched t
+  join authz.devices d on d.id = t.device_id and d.origin = $3
+  join public.users u  on u.id = d.user_id
+  left join public.groups_users gu on gu.user_id = u.id
+  left join public.groups g        on g.id = gu.group_id
+ group by d.id, d.revoked_at, d.user_id, d.kind, u.username, u.active`
+
+// SessionDeleteSQL removes one session by the hash of its cookie. It is
+// idempotent: a token that matches no row deletes nothing and is not an error.
+const SessionDeleteSQL = `delete from authz.sessions where token_hash = $1`
+
 // GateStatements is the list NewConnection prepares. Ordering is irrelevant;
 // the names are the contract.
 func GateStatements() []Statement {
@@ -68,5 +131,8 @@ func GateStatements() []Statement {
 		{Name: StmtNonce, SQL: NonceSQL},
 		{Name: StmtPurge, SQL: PurgeSQL},
 		{Name: StmtCountID, SQL: NonceCountSQL},
+		{Name: StmtSessionMint, SQL: SessionMintSQL},
+		{Name: StmtSessionRead, SQL: SessionReadSQL},
+		{Name: StmtSessionDelete, SQL: SessionDeleteSQL},
 	}
 }

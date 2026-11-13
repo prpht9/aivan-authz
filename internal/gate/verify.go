@@ -39,6 +39,11 @@ type Options struct {
 	Skew     time.Duration
 	MaxBody  int64
 
+	// SessionIdle and SessionMax bound a cookie session. Zero means the
+	// package defaults, which are the spec's 15 minutes and 8 hours.
+	SessionIdle time.Duration
+	SessionMax  time.Duration
+
 	TrustedProxies []*net.IPNet
 	Counter        *store.Counter
 	Now            func() time.Time
@@ -60,6 +65,12 @@ type Gate struct {
 	nonceTTL time.Duration
 	skew     time.Duration
 	maxBody  int64
+
+	// sessionIdle and sessionMax are written only through the prepared
+	// statements as intervals; the idle value is also the 60 s write window's
+	// unit.
+	sessionIdle time.Duration
+	sessionMax  time.Duration
 
 	TrustedProxies []*net.IPNet
 	counter        *store.Counter
@@ -92,6 +103,15 @@ func New(o Options) (*Gate, error) {
 	if o.MaxBody <= 0 {
 		return nil, errors.New("gate: max body must be positive")
 	}
+	if o.SessionIdle == 0 {
+		o.SessionIdle = DefaultSessionIdle
+	}
+	if o.SessionMax == 0 {
+		o.SessionMax = DefaultSessionMax
+	}
+	if o.SessionIdle < 0 || o.SessionMax <= 0 || o.SessionIdle >= o.SessionMax {
+		return nil, errors.New("gate: session idle must be positive and below the absolute cap")
+	}
 
 	g := &Gate{
 		pool:           o.Pool,
@@ -101,6 +121,8 @@ func New(o Options) (*Gate, error) {
 		nonceTTL:       o.NonceTTL,
 		skew:           o.Skew,
 		maxBody:        o.MaxBody,
+		sessionIdle:    o.SessionIdle,
+		sessionMax:     o.SessionMax,
 		TrustedProxies: o.TrustedProxies,
 		counter:        o.Counter,
 		now:            o.Now,
@@ -144,16 +166,9 @@ func (g *Gate) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m, err := g.table.Match(f.Host, f.Target)
-	if err != nil {
-		g.refuse(w, r, http.StatusForbidden, ReasonHostUnknown, f, "host is not configured")
+	m, ok := g.route(w, r, f)
+	if !ok {
 		return
-	}
-	if m.Defaulted {
-		// Visible on purpose: a path reaching the gate with no policy entry is
-		// a routing mistake, and requiring a proof is the safe default.
-		g.log.Warn("policy defaulted to authenticated",
-			"host", f.Host, "target", f.Target, "request_id", reqid.From(r.Context()))
 	}
 
 	if m.Class == policy.ClassPublic {
@@ -164,15 +179,52 @@ func (g *Gate) Verify(w http.ResponseWriter, r *http.Request) {
 			"host", f.Host, "route", m.Route, "target", f.Target,
 			"request_id", reqid.From(r.Context()))
 		g.decide.write(r, decision{RequestID: reqid.From(r.Context()), Host: f.Host,
-			Method: f.Method, Route: m.Route, Allow: true, Reason: "public_route", Status: http.StatusOK})
+			Method: f.Method, Route: m.Route, Allow: true, Reason: ReasonPublicRoute, Status: http.StatusOK})
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	g.verifyProof(w, r, f, m)
+	// A request claiming any proof header is on the proof path, cookie or not:
+	// the signature covers the method, target and body, so a client that did
+	// both does not also need the CSRF rule (D5). Only a cookie with no proof
+	// at all is the session path.
+	if anyProofHeader(r) {
+		g.verifyProof(w, r, f, m)
+		return
+	}
+
+	if token, ok := sessionToken(r); ok {
+		g.verifySession(w, r, f, m, token)
+		return
+	}
+
+	g.denyNoProof(w, r, f)
 }
 
 func (g *Gate) verifyProof(w http.ResponseWriter, r *http.Request, f forwarded, m policy.Match) {
+	id, ok := g.proofIdentity(w, r, f)
+	if !ok {
+		// The denial is already written; every reason went through the one
+		// writer in proofIdentity.
+		return
+	}
+
+	if err := CheckClass(id, m.Class); err != nil {
+		reason, _ := IsDenial(err)
+		if reason == "" {
+			reason = ReasonRoleInsufficient
+		}
+		g.refuse(w, r, http.StatusForbidden, reason, f, "role insufficient")
+		return
+	}
+
+	g.success(w, r, f, m, id)
+}
+
+// proofIdentity verifies a signed proof and returns the identity it carries.
+// It writes the denial itself and returns false when the proof is refused, so
+// every caller gets the same refusal shape.
+func (g *Gate) proofIdentity(w http.ResponseWriter, r *http.Request, f forwarded) (*identity, bool) {
 	deviceHeader := r.Header.Get(HeaderDevice)
 	nonceHeader := r.Header.Get(HeaderNonce)
 	signatureHeader := r.Header.Get(HeaderSignature)
@@ -180,38 +232,38 @@ func (g *Gate) verifyProof(w http.ResponseWriter, r *http.Request, f forwarded, 
 
 	if deviceHeader == "" && nonceHeader == "" && signatureHeader == "" && timestampHeader == "" {
 		g.denyNoProof(w, r, f)
-		return
+		return nil, false
 	}
 	if deviceHeader == "" || nonceHeader == "" || signatureHeader == "" || timestampHeader == "" {
 		g.deny401(w, r, f, ReasonMalformedProof)
-		return
+		return nil, false
 	}
 
 	deviceID, err := proof.ParseDeviceID(deviceHeader)
 	if err != nil {
 		g.deny401(w, r, f, ReasonMalformedProof)
-		return
+		return nil, false
 	}
 	nonceBytes, err := decodeNonce(nonceHeader)
 	if err != nil {
 		g.deny401(w, r, f, ReasonMalformedProof)
-		return
+		return nil, false
 	}
 	timestamp, err := proof.ParseTimestamp(timestampHeader)
 	if err != nil {
 		g.deny401(w, r, f, ReasonMalformedProof)
-		return
+		return nil, false
 	}
 	signature, err := decodeSignature(signatureHeader)
 	if err != nil {
 		g.deny401(w, r, f, ReasonMalformedProof)
-		return
+		return nil, false
 	}
 
 	bodyHash, ok := g.bodyDigest(w, r, f.Method)
 	if !ok {
 		g.refuse(w, r, http.StatusRequestEntityTooLarge, ReasonBodyTooLarge, f, "body exceeds AIVAN_MAX_BODY")
-		return
+		return nil, false
 	}
 
 	canonical := proof.Canonical(proof.Request{
@@ -237,10 +289,10 @@ func (g *Gate) verifyProof(w http.ResponseWriter, r *http.Request, f forwarded, 
 			// situation it was (S14).
 			_ = proof.Verify(string(proof.AlgorithmEd25519), dummy.key, []byte(canonical), dummy.signature)
 			g.deny401(w, r, f, ReasonNonceUnknown)
-			return
+			return nil, false
 		}
 		g.databaseError(w, r, f, err)
-		return
+		return nil, false
 	}
 
 	now := g.now()
@@ -248,59 +300,60 @@ func (g *Gate) verifyProof(w http.ResponseWriter, r *http.Request, f forwarded, 
 	switch {
 	case timestamp < row.issuedAt.Unix():
 		g.deny401(w, r, f, ReasonTimestampBefore)
-		return
+		return nil, false
 	case timestamp > now.Unix()+int64(skew/time.Second),
 		timestamp < now.Unix()-int64(skew/time.Second):
 		g.deny401(w, r, f, ReasonTimestampSkewed)
-		return
+		return nil, false
 	case row.origin != f.Host:
 		// S21: a key enrolled for one application is refused by another even
 		// with a valid signature.
 		g.deny401(w, r, f, ReasonOriginMismatch)
-		return
+		return nil, false
 	case row.revokedAt != nil:
 		g.deny401(w, r, f, ReasonDeviceRevoked)
-		return
+		return nil, false
 	case !row.userActive:
 		// Before the signature check on purpose: an inactive user is refused
 		// without spending CPU on a verification.
 		g.deny401(w, r, f, ReasonUserInactive)
-		return
+		return nil, false
 	}
 
 	if !proof.Supported(row.alg) {
 		// S17: the algorithm comes from devices.alg, never from a request
 		// field, so a client has no vote.
 		g.deny401(w, r, f, ReasonAlgUnsupported)
-		return
+		return nil, false
 	}
 	if err := proof.Verify(row.alg, row.publicKey, []byte(canonical), signature); err != nil {
 		g.deny401(w, r, f, ReasonBadSignature)
-		return
+		return nil, false
 	}
 
 	if !safeUsername(row.username) {
 		g.refuse(w, r, http.StatusForbidden, ReasonUsername, f, "username cannot be a header value")
-		return
+		return nil, false
 	}
 
-	id := &identity{
+	return &identity{
 		UserID:     row.userID,
 		Username:   row.username,
 		DeviceID:   proof.FormatDeviceID(row.id),
 		DeviceKind: row.kind,
 		Roles:      row.roles,
 		Proof:      ProofNonce,
-	}
-	if err := CheckClass(id, m.Class); err != nil {
-		reason, _ := IsDenial(err)
-		if reason == "" {
-			reason = ReasonRoleInsufficient
-		}
-		g.refuse(w, r, http.StatusForbidden, reason, f, "role insufficient")
-		return
-	}
+	}, true
+}
 
+// success writes the identity headers and the 200 the application's identity
+// comes from. Every allow path ends here so the header set cannot drift.
+func (g *Gate) success(w http.ResponseWriter, r *http.Request, f forwarded, m policy.Match, id *identity) {
+	g.allow(w, r, f, m, id, http.StatusOK)
+}
+
+// allow is success with an explicit status, for the mint's 204.
+func (g *Gate) allow(w http.ResponseWriter, r *http.Request, f forwarded, m policy.Match, id *identity, status int) {
 	h := w.Header()
 	h.Set(HeaderUserID, strconv.FormatInt(id.UserID, 10))
 	h.Set(HeaderUser, id.Username)
@@ -311,8 +364,8 @@ func (g *Gate) verifyProof(w http.ResponseWriter, r *http.Request, f forwarded, 
 	h.Set("Cache-Control", "no-store")
 
 	g.decide.write(r, decision{RequestID: reqid.From(r.Context()), Host: f.Host, Method: f.Method,
-		Route: m.Route, UserID: id.UserID, DeviceID: id.DeviceID, Allow: true, Status: http.StatusOK})
-	w.WriteHeader(http.StatusOK)
+		Route: m.Route, UserID: id.UserID, DeviceID: id.DeviceID, Allow: true, Status: status})
+	w.WriteHeader(status)
 }
 
 // dummy is a real key and a real signature over a fixed message, used only so

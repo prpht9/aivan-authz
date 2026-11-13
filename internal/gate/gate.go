@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/chris/aivan-authz/internal/policy"
 )
@@ -46,6 +47,13 @@ const (
 	ProofSession = "session"
 )
 
+// Session lifetime defaults, from spec §5.4. Idle slides and is written back
+// only when it moves more than sessionIdleWindow; the absolute cap never moves.
+const (
+	DefaultSessionIdle = 15 * time.Minute
+	DefaultSessionMax  = 8 * time.Hour
+)
+
 // Denial is every way a request can be refused, after the database work has
 // happened. The client sees one constant 401 body for all of them (S14); the
 // operator sees Reason in the decision log.
@@ -76,6 +84,16 @@ const (
 	ReasonMethodNotAllowed Reason = "method_not_allowed"
 	ReasonForwardedMissing Reason = "forwarded_missing"
 	ReasonBadRequest       Reason = "bad_request"
+
+	// Session reasons. An expired, idle-timed-out and unknown cookie are one
+	// reason on purpose: one statement cannot tell them apart, and the client
+	// is told nothing the 401 body does not already say (S14).
+	ReasonSessionInvalid Reason = "session_invalid"
+	ReasonSessionRefused Reason = "session_refused"
+	ReasonLogout         Reason = "logout"
+	ReasonCSRFMissing    Reason = "csrf_missing"
+	ReasonCSRFSite       Reason = "csrf_samesite"
+	ReasonPublicRoute    Reason = "public_route"
 )
 
 // IsDenial returns the reason for err when err is one of the denial reasons
@@ -184,8 +202,10 @@ func decodeNonce(s string) ([]byte, error) {
 
 // S15 note. The service performs no variable-time comparison of secret material
 // in Go. The nonce comparison is a primary-key equality on a fixed 32-byte
-// digest inside PostgreSQL, and signature verification is library code. The
-// session token comparison that S15 also covers arrives with Phase D.
+// digest inside PostgreSQL, signature verification is library code, and the
+// session token's lookup is the same primary-key equality on a 32-byte SHA-256
+// digest. The token itself is never compared: the database sees only its hash,
+// so there is no secret whose timing could vary with proximity to a guess.
 
 // safeUsername reports whether a username can be a header value as-is. The
 // contract refuses unrepresentable names rather than encoding them, because an

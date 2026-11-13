@@ -1,8 +1,11 @@
 # aivan-authz: the ingress auth service.
 #
-# Phase C adds the two endpoints Traefik calls: /__aivan/verify (forwardAuth)
-# and /__aivan/nonce. No application route is gated by it yet; Phase E wires the
-# middleware into aivan-hud.
+# Phase C adds /__aivan/verify (forwardAuth) and /__aivan/nonce. Phase D adds
+# /__aivan/session, which is reached on the gate's own router rather than
+# through forwardAuth: a cookie set on a forwardAuth 200 is not delivered to the
+# browser without addAuthCookiesToResponse, and the request would have been
+# consumed as an auth check. No application route is gated by it yet; Phase E
+# wires the middleware into aivan-hud.
 #
 # Apply with kubectl, like the rest of this cluster's dev manifests.
 apiVersion: v1
@@ -74,6 +77,13 @@ spec:
               value: /etc/aivan/policy.yaml
             - name: AIVAN_LISTEN
               value: ":8080"
+            # Session lifetimes, spec §5.4. The idle expiry slides and is
+            # written back only when it moves more than 60 s, so a busy session
+            # costs at most one write a minute. The absolute cap never moves.
+            - name: AIVAN_SESSION_IDLE
+              value: "15m"
+            - name: AIVAN_SESSION_MAX
+              value: "8h"
             # Phase C: the nonce rate limiter charges a request to the client
             # address only when the peer is one of these. It must match the
             # cluster's pod CIDR, or every request is charged to Traefik's pod
@@ -126,9 +136,13 @@ spec:
   ports:
     - { name: http, port: 8080, targetPort: http }
 ---
-# The gate answers forwardAuth only. A direct path to it is a bypass, so the
-# policy admits Traefik and nothing else. This matters from Phase E; it is in
-# place now so the posture is the default rather than a later addition.
+# The gate answers forwardAuth and the /__aivan/ endpoints. A direct path to it
+# is a bypass unless a NetworkPolicy admits it, so the policy below admits
+# Traefik and nothing else. Sessions make a second caller legitimate: an
+# operator minting one from a pod in the aivan namespace with `authz
+# list-devices` / `authz revoke` is exactly the console access the design
+# wants. That access needs the aivan-authz Secret rather than a network hole, so
+# the listener stays Traefik-only.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

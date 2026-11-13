@@ -53,6 +53,10 @@ func NewRouterWith(o RouterOptions) http.Handler {
 		// one, and the gate must answer every method without a panic.
 		mux.HandleFunc("/__aivan/verify", o.Gate.Verify)
 		mux.HandleFunc("/__aivan/nonce", o.Gate.Nonce)
+		// The session endpoints are reached directly, not through forwardAuth,
+		// so they live on this router like the others and the handler decides
+		// POST from DELETE.
+		mux.HandleFunc("/__aivan/session", o.Gate.Session)
 	}
 
 	var h http.Handler = mux

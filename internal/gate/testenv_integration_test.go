@@ -167,8 +167,13 @@ func newEnvWithLog(t testing.TB, sink io.Writer) *env {
 		NonceTTL: 120 * time.Second,
 		Skew:     300 * time.Second,
 		MaxBody:  65536,
-		Counter:  counter,
-		Now:      func() time.Time { return e.now },
+		// Short enough that an injected clock can cross both bounds inside a
+		// test without sleeping, long enough that the 60 s write window and
+		// the idle interval are distinct quantities.
+		SessionIdle: 15 * time.Minute,
+		SessionMax:  8 * time.Hour,
+		Counter:     counter,
+		Now:         func() time.Time { return e.now },
 	})
 	if err != nil {
 		t.Fatalf("gate.New: %v", err)
@@ -178,6 +183,7 @@ func newEnvWithLog(t testing.TB, sink io.Writer) *env {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/__aivan/verify", g.Verify)
 	mux.HandleFunc("/__aivan/nonce", g.Nonce)
+	mux.HandleFunc("/__aivan/session", g.Session)
 	e.server = httptest.NewServer(mux)
 	t.Cleanup(e.server.Close)
 
@@ -475,6 +481,23 @@ func (e *env) do(s signedRequest) *response {
 	return readResponse(e.t, resp)
 }
 
+// parseSetCookie returns the value of the cookie named name from a Set-Cookie
+// header, refusing a header that carries any other cookie.
+func parseSetCookie(setCookie, name string) (string, error) {
+	pair, _, ok := strings.Cut(setCookie, ";")
+	if !ok || pair == "" {
+		return "", fmt.Errorf("Set-Cookie %q has no cookie", setCookie)
+	}
+	got, value, ok := strings.Cut(pair, "=")
+	if !ok || got != name {
+		return "", fmt.Errorf("Set-Cookie names %q, want %q", got, name)
+	}
+	if value == "" {
+		return "", fmt.Errorf("Set-Cookie %q has an empty value", setCookie)
+	}
+	return value, nil
+}
+
 // post sends a body-only request to path, with no proof.
 func (e *env) post(path, body string, headers map[string]string) *http.Response {
 	e.t.Helper()
@@ -555,8 +578,129 @@ func harnessAlter(t testing.TB, super, sql string) {
 	harness.Exec(t, super, sql)
 }
 
-// formatID renders a device id in the canonical form the wire uses.
+// harnessExec runs a superuser statement, for tests that age a row directly
+// rather than sleeping.
+func harnessExec(t testing.TB, super, sql string) {
+	t.Helper()
+	harness.Exec(t, super, sql)
+}
+
 func formatID(id [16]byte) string { return proof.FormatDeviceID(id) }
+
+// session is one minted cookie plus what the client knows about it.
+type session struct {
+	Cookie string
+}
+
+// mintRequest builds a POST to /__aivan/session signed for that path. The
+// endpoint is not reached through forwardAuth, so the client sends no
+// X-Forwarded-Method: the request itself is the method and target.
+func (e *env) mintRequest(d device) *http.Request {
+	e.t.Helper()
+	nonce := e.nonceAt(d, -time.Hour, time.Hour)
+	ts := e.now
+
+	req, err := http.NewRequest(http.MethodPost, e.server.URL+"/__aivan/session", nil)
+	if err != nil {
+		e.t.Fatalf("new request: %v", err)
+	}
+	msg := proof.Canonical(proof.Request{
+		Method:     http.MethodPost,
+		Scheme:     "https",
+		Host:       testHost,
+		Target:     "/__aivan/session",
+		BodySHA256: proof.EmptyBodySHA256,
+		Nonce:      nonce,
+		Timestamp:  fmt.Sprintf("%d", ts.Unix()),
+	})
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", testHost)
+	req.Header.Set(gate.HeaderDevice, proof.FormatDeviceID(d.ID))
+	req.Header.Set(gate.HeaderNonce, nonce)
+	req.Header.Set(gate.HeaderTimestamp, fmt.Sprintf("%d", ts.Unix()))
+	req.Header.Set(gate.HeaderSignature, base64.RawURLEncoding.EncodeToString(d.sign(msg)))
+	return req
+}
+
+// mint exchanges a signed proof for a cookie through POST /__aivan/session,
+// the way a browser does, and returns the cookie value.
+func (e *env) mint(d device) session {
+	e.t.Helper()
+	resp, err := e.client.Do(e.mintRequest(d))
+	if err != nil {
+		e.t.Fatalf("mint: %v", err)
+	}
+	r := readResponse(e.t, resp)
+	if r.Status != http.StatusNoContent {
+		e.t.Fatalf("mint status = %d %q, want 204", r.Status, r.Body)
+	}
+	cookie, err := parseSetCookie(r.Header.Get("Set-Cookie"), gate.SessionCookie)
+	if err != nil {
+		e.t.Fatalf("mint Set-Cookie: %v", err)
+	}
+	return session{Cookie: cookie}
+}
+
+// verifyWith sends a verify for cookie with no proof headers, which is what a
+// browser signed in by cookie does.
+func (e *env) verifyWith(cookie string, method, target string) *response {
+	e.t.Helper()
+	return e.doSessionCookie(signedRequest{Method: method, Target: target}, cookie)
+}
+
+// doSessionCookie sends s with a Cookie header and no proof, then returns the
+// response.
+func (e *env) doSessionCookie(s signedRequest, cookie string) *response {
+	e.t.Helper()
+	req := e.request(signedRequest{Method: s.Method, Target: s.Target, Headers: s.Headers})
+	for _, h := range []string{gate.HeaderDevice, gate.HeaderNonce, gate.HeaderSignature, gate.HeaderTimestamp} {
+		req.Header.Del(h)
+	}
+	req.Header.Set("Cookie", gate.SessionCookie+"="+cookie)
+	resp, err := e.server.Client().Do(req)
+	if err != nil {
+		e.t.Fatalf("do: %v", err)
+	}
+	return readResponse(e.t, resp)
+}
+
+// sessionRowFor reads the one session row for a cookie, asserting there is
+// exactly one.
+func (e *env) sessionRowFor(cookie string) (idle, absolute time.Time, deviceID string) {
+	e.t.Helper()
+	hash := proof.SHA256Sum([]byte(cookie))
+	if err := e.pool.QueryRow(context.Background(), `
+select idle_expires_at, absolute_expires_at, device_id::text
+  from authz.sessions where token_hash = $1`, hash[:]).Scan(&idle, &absolute, &deviceID); err != nil {
+		e.t.Fatalf("read session row: %v", err)
+	}
+	return idle, absolute, deviceID
+}
+
+// sessionsFor counts the sessions of a device.
+func (e *env) sessionsFor(d device) int {
+	e.t.Helper()
+	var n int
+	if err := e.pool.QueryRow(context.Background(),
+		`select count(*) from authz.sessions where device_id = $1`,
+		proof.FormatDeviceID(d.ID)).Scan(&n); err != nil {
+		e.t.Fatalf("count sessions: %v", err)
+	}
+	return n
+}
+
+// lastSeen returns the device's last_seen_at, or nil when it has never been
+// stamped.
+func (e *env) lastSeen(d device) *time.Time {
+	e.t.Helper()
+	var at *time.Time
+	if err := e.pool.QueryRow(context.Background(),
+		`select last_seen_at from authz.devices where id = $1`,
+		proof.FormatDeviceID(d.ID)).Scan(&at); err != nil {
+		e.t.Fatalf("read last_seen_at: %v", err)
+	}
+	return at
+}
 
 // Time helpers, wrapped so the benchmark file does not import time twice.
 func timeNow() int64 { return time.Now().UnixNano() }

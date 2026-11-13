@@ -164,43 +164,46 @@ policy about which devices survive, which is a later decision.
 
 Integration, against the fixture database:
 
-- [ ] Mint requires a valid proof: no proof, bad signature, expired nonce all
+- [x] Mint requires a valid proof: no proof, bad signature, expired nonce all
       refuse and set no cookie.
-- [ ] The cookie has `__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`,
+- [x] The cookie has `__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`,
       and no `Domain` and no `Max-Age`. Assert the whole header string.
-- [ ] A minted session authenticates `/__aivan/verify` with
+- [x] A minted session authenticates `/__aivan/verify` with
       `X-Aivan-Proof: session` and the right user, device and roles.
-- [ ] The stored `token_hash` is not the token. Assert by value.
-- [ ] Idle expiry: past `idle_expires_at`, the session is refused (injected
+- [x] The stored `token_hash` is not the token. Assert by value.
+- [x] Idle expiry: past `idle_expires_at`, the session is refused (injected
       clock).
-- [ ] Absolute expiry: a session refreshed on activity still dies at
+- [x] Absolute expiry: a session refreshed on activity still dies at
       `absolute_expires_at`.
-- [ ] **S5:** revoke a device, then present its live cookie — refused on the next
+- [x] **S5:** revoke a device, then present its live cookie — refused on the next
       request, with the same `401` body as an expired session.
-- [ ] **S13:** unsafe method with no `Sec-Fetch-Site` and no `X-Aivan-Csrf` —
+- [x] **S13:** unsafe method with no `Sec-Fetch-Site` and no `X-Aivan-Csrf` —
       `403` with `reason=csrf_missing`. With `same-site` — `403`. With
       `same-origin` — allowed. With a valid `X-Aivan-Csrf` — allowed.
-- [ ] A request with both a cookie and a valid signed proof skips CSRF and
+- [x] A request with both a cookie and a valid signed proof skips CSRF and
       reports `X-Aivan-Proof: nonce`.
-- [ ] Logout deletes the row and clears the cookie; a second logout is `204`.
-- [ ] **Query counter:** a session-authenticated verify is exactly one
+- [x] Logout deletes the row and clears the cookie; a second logout is `204`.
+- [x] **Query counter:** a session-authenticated verify is exactly one
       statement. Do not assert on database write counts; assert on the counter,
       which counts statements issued by the service. To prove the 60 s window
       works, assert the `idle_expires_at` value in the row is unchanged after a
       verify 30 s later, and changed after one 90 s later.
-- [ ] Revoke kills sessions in the same transaction: kill the process between
+- [x] Revoke kills sessions in the same transaction: kill the process between
       the two statements in a test build and assert the database has neither a
       live device nor a live session.
 
-Every item marked S5 or S13 must be shown to fail without its guard.
+Every item marked S5 or S13 must be shown to fail without its guard. The
+removal table is in `doc/phase-d-record.md`.
 
 ## D8. Exit criteria
 
-- [ ] S5 and S13 green and demonstrated to fail without their guards.
-- [ ] One statement per session-authenticated request, asserted.
-- [ ] Cookie header asserted as a full string, not by substring.
-- [ ] Revoke is transactional and tested across a mid-flight crash.
-- [ ] Commit.
+- [x] S5 and S13 green and demonstrated to fail without their guards.
+- [x] One statement per session-authenticated request, asserted.
+- [x] Cookie header asserted as a full string, not by substring.
+- [x] Revoke is transactional and tested across a mid-flight crash.
+- [x] Commit.
+
+The verification record is `doc/phase-d-record.md`.
 
 ## Handoff to Phase E
 
