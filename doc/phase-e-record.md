@@ -8,7 +8,7 @@ have to re-derive it.
 
 | Plan item | Where |
 |---|---|
-| E1 two repositories | commit `…` in `aivan-authz`, commit `…` in `aivan-hud` |
+| E1 two repositories | `ce361f2` in `aivan-authz`, `6ae58a5` in `aivan-hud` |
 | E2 three routers | `aivan-hud/deploy/routing.yaml` (Middleware + 3 IngressRoutes) |
 | E3 header identity | `aivan-hud/app.rb` (`gateway_identity`, `current_user`, `require_admin!`) |
 | E4 logging | `aivan-hud/app.rb` (`before` block, `denial_body`) |

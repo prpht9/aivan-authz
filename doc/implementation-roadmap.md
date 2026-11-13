@@ -58,7 +58,7 @@ outside the phase files themselves.
 | B | complete — `doc/phase-b-record.md` | |
 | C | complete — `doc/phase-c-record.md` | |
 | D | complete — `doc/phase-d-record.md` | |
-| E | complete — `doc/phase-e-record.md` | |
+| E | complete — `doc/phase-e-record.md` | `ce361f2`, hud `6ae58a5` |
 | F | not started | |
 | G | not started | |
 
