@@ -60,6 +60,10 @@ func NewRouterWith(o RouterOptions) http.Handler {
 		// Enrollment: the page and the claim on one prefix. The claim is the
 		// only unauthenticated write path this service has, and the policy
 		// class that permits it is pinned to this prefix (policy.New).
+		// The approvals verifier. It is reached by aivan-hud over the cluster
+		// network, never by a browser, and it returns claims rather than
+		// authority (doc/schema-handover.md §10).
+		mux.HandleFunc(gate.VerifySignaturePath, o.Gate.VerifySignature)
 		mux.HandleFunc(gate.EnrollPath, o.Gate.Enroll)
 		mux.HandleFunc("/__aivan/enroll/", o.Gate.EnrollAsset)
 	}

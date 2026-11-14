@@ -12,6 +12,13 @@ const (
 	// StmtEnrollDevice is the call to authz.enroll_device(), the definer
 	// function that replaces the two statements this package used to run.
 	StmtEnrollDevice = "aivan_enroll_device"
+
+	// The signature-verification statements. They read the key a signature is
+	// checked against, and (for an approval) the hash the signed bytes must
+	// match. Both are reads the grant matrix allows and nothing more.
+	StmtServiceKey   = "aivan_service_key"
+	StmtDeviceKey    = "aivan_device_key"
+	StmtApprovalHash = "aivan_approval_hash"
 )
 
 // VerifySQL consumes a nonce and returns everything the gate needs to decide,
@@ -158,6 +165,30 @@ const EnrollAuditSQL = `
 insert into authz.audit_log (user_id, device_id, host, route, decision, reason, request_id, subject_id)
 values ($1, $2, $3, '/__aivan/enroll', 'enroll', 'claimed', $4, $5)`
 
+// ServiceKeySQL resolves a service's public key by id. retired_at is selected
+// rather than filtered, so the caller can tell a refusal reason apart in the
+// decision log without a second statement.
+const ServiceKeySQL = `
+select public_key, alg, retired_at is not null
+  from authz.services
+ where id = $1`
+
+// DeviceKeySQL resolves a device's public key and its owner. It is the same
+// row the proof path reads, narrowed to what a signature check needs; the
+// column grant on devices already allows every one of these.
+const DeviceKeySQL = `
+select public_key, alg, origin, revoked_at, user_id
+  from authz.devices
+ where id = $1`
+
+// ApprovalHashSQL reads the stored request hash and the person an approval is
+// for. The hash is what the signed decision must name, so a signature cannot be
+// spent against a payload that was swapped after approval.
+const ApprovalHashSQL = `
+select request_hash, subject_user_id
+  from authz.approvals
+ where id = $1`
+
 // GateStatements is the list NewConnection prepares. Ordering is irrelevant;
 // the names are the contract.
 //
@@ -173,5 +204,8 @@ func GateStatements() []Statement {
 		{Name: StmtSessionRead, SQL: SessionReadSQL},
 		{Name: StmtSessionDelete, SQL: SessionDeleteSQL},
 		{Name: StmtEnrollDevice, SQL: EnrollDeviceSQL},
+		{Name: StmtServiceKey, SQL: ServiceKeySQL},
+		{Name: StmtDeviceKey, SQL: DeviceKeySQL},
+		{Name: StmtApprovalHash, SQL: ApprovalHashSQL},
 	}
 }
