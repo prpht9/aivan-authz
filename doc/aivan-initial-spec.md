@@ -316,6 +316,10 @@ Denial must be distinguishable to the operator while opaque to the client:
 
 ### 6.3 Grants
 
+Amended 2026-11-14 (see `doc/schema-handover.md`): **the application verifies,
+and this service verifies signatures on its behalf.** The gate is not the
+verifier of grants, because it must not hold authority.
+
 The service issues and verifies signed grants. A grant is a small statement:
 
 ```
@@ -330,10 +334,18 @@ nonce  server-issued, single use
 
 - A grant is verified by the component it names, against an enrolled key. It is
   not a bearer token passed down a call chain.
+- In this design aivan-hud is the verifier for the AIVAN system: it verifies the
+  requesting service's signature, stores the pending approval, verifies the
+  approver's signature through `POST /__aivan/verify-signature`, and confirms to
+  the requesting component. The gate returns claims and never authority.
 - A grant carries the approval, not just the connection. This is what a TLS
   handshake cannot express and the reason grants are the core artifact.
-- Grants are short-lived. Duration is per `act`, not global.
+- Grants are short-lived. Duration is per `act`, not global, and it is a window
+  bounded per `(resource, permission)`.
 - A grant is single-use when the operation is not idempotent.
+
+The signature the approver makes covers the hash of the exact request bytes, not
+a request id, so a payload swapped after approval cannot be spent under it.
 
 ### 6.4 Devices and enrollment
 

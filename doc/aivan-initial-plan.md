@@ -186,6 +186,12 @@ Notes on the shape:
 
 ### 4.1 Privileges
 
+**Superseded 2026-11-14 by `doc/schema-handover.md` and
+`aivan-hud/doc/schema-ownership.md`.** The grants below are what was implemented
+through Phase G and are no longer the design: the gate no longer owns this
+schema, no longer has DML on `devices`, and no longer has `SELECT` on
+`audit_log`. Kept as history.
+
 `0002_grants.sql`, run once by the migration role:
 
 ```sql
@@ -619,6 +625,11 @@ certificate renewal, and multi-replica readiness. Grants block no acceptance
 item and the canonical-string and signature code carries over unchanged.
 
 ## 9. Bootstrap, in order
+
+**Superseded 2026-11-14 by `doc/schema-handover.md` §2.** Both commands move out
+of the gate image: the person is still created by hud's `rake admin:create`, and
+the pending enrollment is minted by the `authz-admin` binary or, later, by hud.
+The order below is what shipped and is kept as history.
 
 Two console steps, split because the gate cannot write `public.users` by
 design:
