@@ -1,5 +1,7 @@
 # Phase F — enrollment
 
+Status: complete (2026-11-13).
+
 Standalone work file. Prerequisites: Phase E complete (aivan-hud is behind the
 gate with a console-minted session). No other phase file needed.
 

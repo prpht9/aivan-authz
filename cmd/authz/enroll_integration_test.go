@@ -157,19 +157,20 @@ func TestDevSessionIsGone(t *testing.T) {
 	}
 }
 
-// TestShippedBinaryHasNoSelftest: the cross-implementation check is a devtools
-// route, and the image is built without the tag.
+// TestShippedBinaryHasNoSelftest: Phase G removed the build tag and the
+// selftest routes with it. The string search is a backstop against a route
+// being reintroduced from an embedded leftover.
 func TestShippedBinaryHasNoSelftest(t *testing.T) {
 	body, err := os.ReadFile(binary(t))
 	if err != nil {
 		t.Fatalf("read binary: %v", err)
 	}
 	if strings.Contains(string(body), "/__aivan/selftest") {
-		t.Fatal("the default build contains the selftest route")
+		t.Fatal("the build contains the selftest route")
 	}
-	// The enrollment page is part of the shipped binary, so this is a check that
-	// the string search is looking at a binary that has one.
+	// The enrollment page is part of the binary, so this is a check that the
+	// string search is looking at a binary that has one.
 	if !strings.Contains(string(body), gate.EnrollPath) {
-		t.Fatal("the default build does not contain the enrollment path")
+		t.Fatal("the build does not contain the enrollment path")
 	}
 }

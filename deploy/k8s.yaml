@@ -35,6 +35,17 @@ metadata:
   namespace: ${AIVAN_NS}
 data:
   policy.yaml: |
+    # The body ceiling the proxy in front of the gate is configured with, in the
+    # same file as the routes so the two numbers sit together. Traefik's
+    # forwardAuth maxBodySize must be above AIVAN_MAX_BODY (below), or Traefik
+    # answers first with its own 401 and the operator learns nothing. The gate
+    # refuses to start if this is not above AIVAN_MAX_BODY.
+    #
+    # The documented consequence: a body between 1048577 and 2097152 bytes
+    # reaches the gate and is refused by it with a 413; a body above 2097152 is
+    # refused by Traefik with a 401 (S18, doc/runbook.md).
+    maxBody: 2097152
+
     # The gated router catches every path the public router does not name, so
     # the first matching prefix is what decides. "/" is the default: a path the
     # router sends through the gate needs any known device. A path missing from
@@ -69,6 +80,10 @@ spec:
       labels: { app: aivan-authz }
     spec:
       automountServiceAccountToken: false
+      # The gate's drain is 10 s (cmd/authz drainTimeout), so the kubelet must
+      # not SIGKILL before it finishes. Twenty seconds leaves the drain plus the
+      # time between SIGTERM and the endpoint being removed from the Service.
+      terminationGracePeriodSeconds: 20
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -91,6 +106,13 @@ spec:
               value: /etc/aivan/policy.yaml
             - name: AIVAN_LISTEN
               value: ":8080"
+            # The gate's own body limit (S18). Explicit rather than defaulted so
+            # the number beside Traefik's maxBodySize in the Middleware and the
+            # policy file is a thing an operator can compare: gate 1048576,
+            # Traefik 2097152. A body of 1048577 bytes is refused here with a
+            # 413; a body above 2097152 is refused by Traefik with a 401.
+            - name: AIVAN_MAX_BODY
+              value: "1048576"
             # Session lifetimes, spec §5.4. The idle expiry slides and is
             # written back only when it moves more than 60 s, so a busy session
             # costs at most one write a minute. The absolute cap never moves.

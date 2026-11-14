@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chris/aivan-authz/internal/audit"
 	"github.com/chris/aivan-authz/internal/policy"
 )
 
@@ -57,52 +58,55 @@ const (
 // Denial is every way a request can be refused, after the database work has
 // happened. The client sees one constant 401 body for all of them (S14); the
 // operator sees Reason in the decision log.
-type Reason string
+//
+// The set is declared once, in internal/audit, so the log writer can prove that
+// what it publishes is a constant and not a value built from a request.
+type Reason = audit.Reason
 
 const (
-	ReasonNoProof          Reason = "no_proof"
-	ReasonMalformedProof   Reason = "malformed_proof"
-	ReasonNonceUnknown     Reason = "nonce_unknown"
-	ReasonNonceExpired     Reason = "nonce_expired"
-	ReasonReplay           Reason = "replay"
-	ReasonTimestampSkewed  Reason = "timestamp_skewed"
-	ReasonTimestampBefore  Reason = "timestamp_before_issued"
-	ReasonOriginMismatch   Reason = "origin_mismatch"
-	ReasonDeviceRevoked    Reason = "device_revoked"
-	ReasonUserInactive     Reason = "user_inactive"
-	ReasonBadSignature     Reason = "bad_signature"
-	ReasonAlgUnsupported   Reason = "alg_unsupported"
-	ReasonRoleInsufficient Reason = "role_insufficient"
-	ReasonUsername         Reason = "username_unrepresentable"
-	ReasonHostUnknown      Reason = "host_unknown"
-	ReasonClassDefaulted   Reason = "class_defaulted"
-	ReasonPlainHTTP        Reason = "plain_http"
-	ReasonBodyTooLarge     Reason = "body_too_large"
-	ReasonDatabase         Reason = "database_error"
-	ReasonRateLimited      Reason = "rate_limited"
-	ReasonNonceTableFull   Reason = "nonce_table_full"
-	ReasonMethodNotAllowed Reason = "method_not_allowed"
-	ReasonForwardedMissing Reason = "forwarded_missing"
-	ReasonBadRequest       Reason = "bad_request"
+	ReasonNoProof          = audit.NoProof
+	ReasonMalformedProof   = audit.MalformedProof
+	ReasonNonceUnknown     = audit.NonceUnknown
+	ReasonNonceExpired     = audit.NonceExpired
+	ReasonReplay           = audit.Replay
+	ReasonTimestampSkewed  = audit.TimestampSkewed
+	ReasonTimestampBefore  = audit.TimestampBefore
+	ReasonOriginMismatch   = audit.OriginMismatch
+	ReasonDeviceRevoked    = audit.DeviceRevoked
+	ReasonUserInactive     = audit.UserInactive
+	ReasonBadSignature     = audit.BadSignature
+	ReasonAlgUnsupported   = audit.AlgUnsupported
+	ReasonRoleInsufficient = audit.RoleInsufficient
+	ReasonUsername         = audit.Username
+	ReasonHostUnknown      = audit.HostUnknown
+	ReasonClassDefaulted   = audit.ClassDefaulted
+	ReasonPlainHTTP        = audit.PlainHTTP
+	ReasonBodyTooLarge     = audit.BodyTooLarge
+	ReasonDatabase         = audit.Database
+	ReasonRateLimited      = audit.RateLimited
+	ReasonNonceTableFull   = audit.NonceTableFull
+	ReasonMethodNotAllowed = audit.MethodNotAllowed
+	ReasonForwardedMissing = audit.ForwardedMissing
+	ReasonBadRequest       = audit.BadRequest
 
 	// Session reasons. An expired, idle-timed-out and unknown cookie are one
 	// reason on purpose: one statement cannot tell them apart, and the client
 	// is told nothing the 401 body does not already say (S14).
-	ReasonSessionInvalid Reason = "session_invalid"
-	ReasonSessionRefused Reason = "session_refused"
-	ReasonLogout         Reason = "logout"
-	ReasonCSRFMissing    Reason = "csrf_missing"
-	ReasonCSRFSite       Reason = "csrf_samesite"
-	ReasonPublicRoute    Reason = "public_route"
+	ReasonSessionInvalid = audit.SessionInvalid
+	ReasonSessionRefused = audit.SessionRefused
+	ReasonLogout         = audit.Logout
+	ReasonCSRFMissing    = audit.CSRFMissing
+	ReasonCSRFSite       = audit.CSRFSite
+	ReasonPublicRoute    = audit.PublicRoute
 
 	// Enrollment reasons. The one the client sees is ReasonEnrollRefused in
 	// every case; the others are what the decision log records for an operator.
-	ReasonEnrollClaimed   Reason = "claimed"
-	ReasonEnrollRefused   Reason = "enroll_refused"
-	ReasonEnrollDuplicate Reason = "enroll_duplicate"
-	ReasonEnrollExpired   Reason = "enroll_expired"
-	ReasonEnrollCode      Reason = "enroll_bad_code"
-	ReasonEnrollOrigin    Reason = "enroll_wrong_origin"
+	ReasonEnrollClaimed   = audit.EnrollClaimed
+	ReasonEnrollRefused   = audit.EnrollRefused
+	ReasonEnrollDuplicate = audit.EnrollDuplicate
+	ReasonEnrollExpired   = audit.EnrollExpired
+	ReasonEnrollCode      = audit.EnrollCode
+	ReasonEnrollOrigin    = audit.EnrollOrigin
 )
 
 // IsDenial returns the reason for err when err is one of the denial reasons

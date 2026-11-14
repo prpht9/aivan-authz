@@ -1,5 +1,7 @@
 # Phase A — prove the Traefik contract
 
+Status: complete (2026-11-13).
+
 Standalone work file. Read this and `doc/aivan-initial-spec.md` §8.1 only; no
 other phase file is a prerequisite. Parent plan: `doc/aivan-initial-plan.md` §8,
 Phase A.

@@ -255,6 +255,50 @@ hosts:
 			env:     map[string]string{"AIVAN_TRUSTED_PROXY_CIDRS": "10.0.0.0/33"},
 			wantSub: "not a CIDR",
 		},
+		{
+			name: "policy maxBody below the gate limit",
+			env: map[string]string{"AIVAN_POLICY": writePolicy(t, `
+maxBody: 524288
+hosts:
+  aivan-hud.home.arpa:
+    routes:
+      - { prefix: /, class: authenticated }
+`)},
+			wantSub: "is not above AIVAN_MAX_BODY",
+		},
+		{
+			name: "policy maxBody equal to the gate limit",
+			env: map[string]string{"AIVAN_POLICY": writePolicy(t, `
+maxBody: 1048576
+hosts:
+  aivan-hud.home.arpa:
+    routes:
+      - { prefix: /, class: authenticated }
+`)},
+			wantSub: "is not above AIVAN_MAX_BODY",
+		},
+		{
+			name: "policy maxBody not a number",
+			env: map[string]string{"AIVAN_POLICY": writePolicy(t, `
+maxBody: 2MB
+hosts:
+  aivan-hud.home.arpa:
+    routes:
+      - { prefix: /, class: authenticated }
+`)},
+			wantSub: "AIVAN_POLICY",
+		},
+		{
+			name: "policy maxBody zero",
+			env: map[string]string{"AIVAN_POLICY": writePolicy(t, `
+maxBody: 0
+hosts:
+  aivan-hud.home.arpa:
+    routes:
+      - { prefix: /, class: authenticated }
+`)},
+			wantSub: "must be positive",
+		},
 	}
 
 	for _, tc := range cases {
@@ -285,6 +329,14 @@ func TestBoundariesAccepted(t *testing.T) {
 		{"enrollment class on its own prefix", map[string]string{
 			"AIVAN_POLICY": writePolicy(t, pinnedEnrollmentPolicy),
 		}},
+		{"proxy ceiling above the gate limit", map[string]string{"AIVAN_POLICY": writePolicy(t, `
+maxBody: 2097152
+hosts:
+  aivan-hud.home.arpa:
+    routes:
+      - { prefix: /, class: authenticated }
+`)}},
+		{"no proxy ceiling declared", map[string]string{"AIVAN_POLICY": writePolicy(t, goodPolicy)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chris/aivan-authz/internal/audit"
 	"github.com/chris/aivan-authz/internal/config"
 	"github.com/chris/aivan-authz/internal/console"
 	"github.com/chris/aivan-authz/internal/gate"
@@ -34,7 +35,10 @@ const drainTimeout = 10 * time.Second
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		// Every error a subcommand returns may quote what a database driver
+		// said, and a driver's message can carry the connection string. The
+		// scrub is the same one the logger uses.
+		fmt.Fprintln(os.Stderr, audit.Scrub(err.Error()))
 		os.Exit(1)
 	}
 }
@@ -227,7 +231,10 @@ func flagValue(args []string, name string) (string, error) {
 }
 
 func newLogger() *slog.Logger {
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// One JSON line per event on stdout, wrapped in the filter that drops any
+	// attribute naming a secret. The wrapper is what makes "no cookie in the
+	// log" a property of the process rather than a review habit.
+	return audit.Logger(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 }
 
 func migrate(log *slog.Logger) error {
@@ -303,6 +310,22 @@ func serve(log *slog.Logger) error {
 		return fmt.Errorf("refusing to start: %w", err)
 	}
 
+	// Before serving: one purge pass, so a restarted gate cleans up what
+	// accumulated while it was down rather than leaving it to the ticker.
+	// This runs after the privilege probe because a credential that may not
+	// delete must be refused there, not discovered here.
+	if _, err := g.Purge(ctx); err != nil {
+		return fmt.Errorf("refusing to start: purge: %w", err)
+	}
+
+	// Open the pool's warm connections before the listener does. The first
+	// request should not race a dial: a connection-pool wait is what the load
+	// budget forbids, and moving it to startup makes a slow database a start
+	// failure rather than a slow user.
+	if err := store.Warm(ctx, db.Pool, store.WarmCount()); err != nil {
+		return fmt.Errorf("refusing to start: %w", err)
+	}
+
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Listen, err)
@@ -323,6 +346,9 @@ func serve(log *slog.Logger) error {
 		"listen", ln.Addr().String(),
 		"hosts", len(cfg.Hosts),
 		"policy", cfg.PolicyPath,
+		"max_body", cfg.MaxBody,
+		"proxy_max_body", cfg.ProxyMaxBody,
+		"purge_interval", gate.PurgeInterval.String(),
 	)
 
 	serveErr := make(chan error, 1)
@@ -348,6 +374,24 @@ func serve(log *slog.Logger) error {
 		log.Warn("shutdown incomplete", "error", err)
 		return nil
 	}
-	log.Info("stopped")
+	// The pool's own counters, at the end of a run, are how "no connection-pool
+	// waits" is demonstrated under load rather than inferred. acquire_avg_us is
+	// the time a request spent getting a connection: with a warm pool it is the
+	// pointer swap, and a queue would show up as milliseconds. A canceled
+	// acquire is a request that gave up waiting, which is the failure the
+	// budget forbids outright.
+	stat := db.Pool.Stat()
+	acquireAvg := time.Duration(0)
+	if n := stat.AcquireCount(); n > 0 {
+		acquireAvg = stat.AcquireDuration() / time.Duration(n)
+	}
+	log.Info("stopped",
+		"acquires", stat.AcquireCount(),
+		"acquire_avg_us", acquireAvg.Microseconds(),
+		"connections_created", stat.NewConnsCount(),
+		"canceled_acquires", stat.CanceledAcquireCount(),
+		"max_conns", stat.MaxConns(),
+		"total_conns", stat.TotalConns(),
+	)
 	return nil
 }

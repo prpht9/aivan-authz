@@ -3,6 +3,7 @@ package proof
 import (
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,26 +169,36 @@ func loadEnrollVectors(t *testing.T) []enrollVector {
 	return vs
 }
 
-// TestEnrollVectorsAreOneCopy pins the two files that hold the shared vectors
-// to the same bytes.
+// TestBrowserCanonicalConstantsMatch is the anti-drift check that replaced the
+// Phase F selftest. The browser builds the claim string in
+// internal/gate/web/enroll/canonical.js, and the two constants that decide
+// whether a signature can ever match are the version line and the code length.
+// They are asserted against the JavaScript source here, so a change to one side
+// without the other fails a test rather than a user's enrollment.
 //
-// The authoritative file is testdata/enroll.json, which this package's tests
-// read from disk. The devtools selftest embeds a copy in internal/gate, because
-// go:embed cannot reach across packages. A copy that drifts would let the
-// browser half of the selftest check a different set of vectors than the Go
-// half, which is exactly the failure the selftest exists to catch.
-func TestEnrollVectorsAreOneCopy(t *testing.T) {
-	authoritative, err := os.ReadFile(filepath.Join("testdata", "enroll.json"))
+// The full string agreement was demonstrated in Phase F by the selftest, which
+// Phase G removed, and is re-demonstrated by the browser enrollment recorded in
+// doc/phase-g-record.md.
+func TestBrowserCanonicalConstantsMatch(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "gate", "web", "enroll", "canonical.js"))
 	if err != nil {
-		t.Fatalf("read authoritative vectors: %v", err)
+		t.Fatalf("read canonical.js: %v", err)
 	}
-	copied, err := os.ReadFile(filepath.Join("..", "gate", "enroll_vectors.json"))
-	if err != nil {
-		t.Fatalf("read embedded copy: %v", err)
+	src := string(body)
+
+	for _, want := range []struct {
+		what string
+		line string
+	}{
+		{"version", "export const ENROLL_VERSION = '" + EnrollVersion + "';"},
+		{"code length", fmt.Sprintf("export const CODE_LEN = %d;", EnrollCodeLen)},
+	} {
+		if !strings.Contains(src, want.line) {
+			t.Errorf("canonical.js does not declare the Go %s (%q)", want.what, want.line)
+		}
 	}
-	if string(copied) != string(authoritative) {
-		t.Fatal("internal/gate/enroll_vectors.json differs from internal/proof/testdata/enroll.json; " +
-			"copy it again so the browser and Go halves of the selftest check the same vectors")
+	if !strings.Contains(src, "'"+crockfordAlphabet+"'") {
+		t.Errorf("canonical.js does not use the Go Crockford alphabet %q", crockfordAlphabet)
 	}
 }
 

@@ -1,5 +1,7 @@
 # Phase E — put aivan-hud behind the gate
 
+Status: complete (2026-11-13).
+
 Standalone work file. Prerequisites: Phase D complete (a session can be minted
 from a signed proof). Also needs `doc/traefik-contract.md` from Phase A for the
 observed middleware behaviour.

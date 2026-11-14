@@ -1,5 +1,7 @@
 # Phase C — proof, policy, and the hot path
 
+Status: complete (2026-11-13).
+
 Standalone work file. Prerequisites: Phase B complete (binary starts, schema
 applied, privilege probe passing). No other phase file needed.
 

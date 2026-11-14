@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/chris/aivan-authz/internal/audit"
 	"github.com/chris/aivan-authz/internal/policy"
 	"github.com/chris/aivan-authz/internal/proof"
 	"github.com/chris/aivan-authz/internal/reqid"
@@ -505,11 +506,11 @@ func (g *Gate) refuse(w http.ResponseWriter, r *http.Request, status int, reason
 }
 
 func (g *Gate) databaseError(w http.ResponseWriter, r *http.Request, f forwarded, err error) {
-	// The error is logged without the DSN: pgx errors can carry the
-	// connection string, so only the message shape is quoted.
+	// The error is described, not quoted: a pgx error can carry the connection
+	// string, so only SQLSTATE and a short server message are published.
 	g.decide.write(r, decision{RequestID: reqid.From(r.Context()), Host: f.Host, Method: f.Method,
 		Allow: false, Reason: ReasonDatabase, Status: http.StatusServiceUnavailable})
-	g.log.Error("database error", "error", err.Error(), "request_id", reqid.From(r.Context()))
+	g.log.Error("database error", "error", audit.Error(err), "request_id", reqid.From(r.Context()))
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusServiceUnavailable)
 }

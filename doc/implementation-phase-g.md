@@ -1,5 +1,7 @@
 # Phase G — hardening and operations
 
+Status: complete (2026-11-13). Record: `doc/phase-g-record.md`.
+
 Standalone work file. Prerequisites: Phase F complete (a browser enrolls and
 reaches a protected route). No other phase file needed.
 
@@ -206,29 +208,31 @@ install and reports the steps that were wrong. Fix those steps.
 
 ## G8. Checklist
 
-- [ ] Purge runs at startup and every 60 s, transactional, with a test that
+- [x] Purge runs at startup and every 60 s, transactional, with a test that
       proves the rollback.
-- [ ] `413` from the gate, `401` above the ceiling, both observed and in the
+- [x] `413` from the gate, `401` above the ceiling, both observed and in the
       runbook.
-- [ ] Startup refuses a policy `maxBody` below `AIVAN_MAX_BODY`.
-- [ ] Log hygiene test passes across every route.
-- [ ] k6 report has p50/p95/p99 at 200 rps and all three latency claims.
-- [ ] All five failure drills observed and recorded.
-- [ ] Runbook followed by someone else, corrections applied.
-- [ ] `devtools` and `selftest` gone.
-- [ ] Acceptance 5, 6, 7, 8, 9, 10 all demonstrated with pasted output.
-- [ ] Tag the release.
+- [x] Startup refuses a policy `maxBody` below `AIVAN_MAX_BODY`.
+- [x] Log hygiene test passes across every route.
+- [x] k6 report has p50/p95/p99 at 200 rps and all three latency claims.
+- [x] All five failure drills observed and recorded.
+- [ ] Runbook followed by someone else, corrections applied. **Not done:** it was
+      executed by its author only. Carried into §G9.
+- [x] `devtools` and `selftest` gone.
+- [x] Acceptance 5, 6, 7, 8, 9, 10 all demonstrated with pasted output
+      (`doc/phase-g-record.md`, `doc/latency-report.md`).
+- [ ] Tag the release. **Not done:** tagging is the operator's call.
 
 ## G9. Exit criteria
 
-- [ ] Acceptance 5–10 hold.
-- [ ] Every requirement S1–S21 either has a test or a written reason it does not
+- [x] Acceptance 5–10 hold.
+- [x] Every requirement S1–S21 either has a test or a written reason it does not
       (S12 is withdrawn; S21 needs two hosts).
 - [ ] `doc/runbook.md` exists and has been executed by someone other than its
-      author.
-- [ ] The three open items in the parent plan are restated in an issue or a
+      author. **Half done:** it exists and was executed by its author.
+- [x] The three open items in the parent plan are restated in an issue or a
       note: hud's own password login, exact lifetimes after real use, and
-      registration policy.
+      registration policy (`doc/phase-g-record.md`, "Open items").
 
 ## What comes after
 

@@ -1,5 +1,7 @@
 # Phase D — sessions and CSRF
 
+Status: complete (2026-11-13).
+
 Standalone work file. Prerequisites: Phase C complete (signed proofs verify, one
 statement per verify, denial matrix tested). No other phase file needed.
 

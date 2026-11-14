@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/chris/aivan-authz/internal/audit"
 )
 
 // Rate limits for the nonce endpoint. A client needs one nonce per request it
@@ -138,7 +140,12 @@ func (d decisionLogger) write(r *http.Request, dec decision) {
 	if dec.Allow {
 		verdict = "allow"
 	}
-	d.log.Info("decision",
+	// The reason comes from the closed set. An allow has no reason, which is
+	// the empty string and is omitted rather than published. A non-empty value
+	// that is not in the set did not come from a constant — a future
+	// interpolation — and is published as "unknown" rather than as whatever
+	// the request carried.
+	attrs := []any{
 		"request_id", dec.RequestID,
 		"host", dec.Host,
 		"method", dec.Method,
@@ -146,9 +153,19 @@ func (d decisionLogger) write(r *http.Request, dec decision) {
 		"user_id", subject,
 		"device_id", dec.DeviceID,
 		"decision", verdict,
-		"reason", string(dec.Reason),
-		"status", dec.Status,
-	)
+	}
+	if dec.Reason != "" {
+		reason := audit.OrUnknown(dec.Reason)
+		if reason == audit.Unknown && dec.Reason != audit.Unknown {
+			// Name the near miss without its content: only that something
+			// undeclared reached the writer.
+			d.log.Warn("decision carried an undeclared reason",
+				"request_id", dec.RequestID, "route", dec.Route)
+		}
+		attrs = append(attrs, "reason", string(reason))
+	}
+	attrs = append(attrs, "status", dec.Status)
+	d.log.Info("decision", attrs...)
 }
 
 func splitHostPort(hostport string) (host, port string, err error) {

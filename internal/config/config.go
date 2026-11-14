@@ -37,6 +37,10 @@ type Config struct {
 	SessionIdle time.Duration
 	SessionMax  time.Duration
 	MaxBody     int64
+	// ProxyMaxBody is the ceiling the policy file declares for the proxy in
+	// front of the gate, or 0 when it declares none. It must be above MaxBody
+	// so the gate answers 413 itself; see the check in Load.
+	ProxyMaxBody int64
 
 	TrustedProxies []*net.IPNet
 
@@ -107,7 +111,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, err
 	}
 
-	if cfg.Policy, err = loadPolicy(cfg.PolicyPath); err != nil {
+	if cfg.Policy, cfg.ProxyMaxBody, err = loadPolicy(cfg.PolicyPath); err != nil {
 		return nil, err
 	}
 	if err := cfg.crossCheck(); err != nil {
@@ -116,8 +120,9 @@ func Load(getenv func(string) string) (*Config, error) {
 	return cfg, nil
 }
 
-// crossCheck refuses a policy that names a host the gate does not serve. The
-// route-level checks live in policy.New, which the caller runs afterwards.
+// crossCheck refuses a policy that names a host the gate does not serve, or a
+// body ceiling below the gate's own limit. The route-level checks live in
+// policy.New, which the caller runs afterwards.
 func (c *Config) crossCheck() error {
 	listed := make(map[string]bool, len(c.Hosts))
 	for _, h := range c.Hosts {
@@ -127,6 +132,17 @@ func (c *Config) crossCheck() error {
 		if !listed[host] {
 			return fmt.Errorf("policy host %q is not listed in AIVAN_HOSTS", host)
 		}
+	}
+	// A proxy ceiling at or below the gate's limit means the proxy answers
+	// first, with its own status and its own body, for a request the gate would
+	// have refused with a 413 naming the limit. The operator then reads a 401
+	// from Traefik and learns nothing. The two numbers are in different files,
+	// so this refuses the drift rather than trusting it.
+	if c.ProxyMaxBody > 0 && c.ProxyMaxBody <= c.MaxBody {
+		return fmt.Errorf(
+			"policy maxBody (%d) is not above AIVAN_MAX_BODY (%d); the proxy would answer before the gate. "+
+				"Set the policy maxBody above AIVAN_MAX_BODY so the gate's 413 is the one a client sees",
+			c.ProxyMaxBody, c.MaxBody)
 	}
 	return nil
 }
@@ -231,7 +247,12 @@ func int64Value(getenv func(string) string, key string, def int64) (int64, error
 }
 
 type policyFile struct {
-	Hosts map[string]struct {
+	// MaxBody is the ceiling the proxy in front of this service is configured
+	// with, declared in the same file as the routes so the two numbers live
+	// next to each other. It is optional: an absent value means the file makes
+	// no claim, and only the environment limit applies.
+	MaxBody *int64 `yaml:"maxBody"`
+	Hosts   map[string]struct {
 		Scheme string `yaml:"scheme"`
 		Routes []struct {
 			Prefix string `yaml:"prefix"`
@@ -240,10 +261,10 @@ type policyFile struct {
 	} `yaml:"hosts"`
 }
 
-func loadPolicy(path string) (*policy.Table, error) {
+func loadPolicy(path string) (*policy.Table, int64, error) {
 	f, err := os.Open(path) // #nosec G304 -- path comes from trusted configuration
 	if err != nil {
-		return nil, fmt.Errorf("AIVAN_POLICY: %w", err)
+		return nil, 0, fmt.Errorf("AIVAN_POLICY: %w", err)
 	}
 	defer f.Close()
 
@@ -251,17 +272,25 @@ func loadPolicy(path string) (*policy.Table, error) {
 	dec.KnownFields(true)
 	var pf policyFile
 	if err := dec.Decode(&pf); err != nil {
-		return nil, fmt.Errorf("AIVAN_POLICY %s: %w", path, err)
+		return nil, 0, fmt.Errorf("AIVAN_POLICY %s: %w", path, err)
 	}
 	if len(pf.Hosts) == 0 {
-		return nil, fmt.Errorf("AIVAN_POLICY %s: hosts is empty", path)
+		return nil, 0, fmt.Errorf("AIVAN_POLICY %s: hosts is empty", path)
+	}
+
+	var proxyMaxBody int64
+	if pf.MaxBody != nil {
+		if *pf.MaxBody <= 0 {
+			return nil, 0, fmt.Errorf("AIVAN_POLICY %s: maxBody (%d) must be positive", path, *pf.MaxBody)
+		}
+		proxyMaxBody = *pf.MaxBody
 	}
 
 	hosts := make(map[string]policy.Host, len(pf.Hosts))
 	for rawHost, hp := range pf.Hosts {
 		host := strings.ToLower(strings.TrimSpace(rawHost))
 		if !validHostname(host) {
-			return nil, fmt.Errorf("AIVAN_POLICY %s: host %q is not a bare hostname", path, rawHost)
+			return nil, 0, fmt.Errorf("AIVAN_POLICY %s: host %q is not a bare hostname", path, rawHost)
 		}
 		h := policy.Host{Scheme: strings.ToLower(hp.Scheme)}
 		for _, r := range hp.Routes {
@@ -277,7 +306,7 @@ func loadPolicy(path string) (*policy.Table, error) {
 	if err != nil {
 		// policy.New's messages name the host, prefix and class, but not the
 		// file, and an operator needs the file to know where to look.
-		return nil, fmt.Errorf("AIVAN_POLICY %s: %w", path, err)
+		return nil, 0, fmt.Errorf("AIVAN_POLICY %s: %w", path, err)
 	}
-	return table, nil
+	return table, proxyMaxBody, nil
 }

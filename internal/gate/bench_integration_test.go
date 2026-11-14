@@ -107,6 +107,14 @@ func TestVerifyPercentiles(t *testing.T) {
 	t.Logf("verify latency over %d requests: p50=%s p99=%s max=%s",
 		samples, microseconds(p50), microseconds(p99), microseconds(durations[len(durations)-1]))
 
+	if raceDetector {
+		// The detector's own overhead is many times the budget, so a number
+		// measured here would fail without saying anything about the shipped
+		// binary. The report is still printed; see doc/latency-report.md for
+		// the figure the budget is asserted against.
+		t.Logf("skipping the p99 assertion under -race; the budget applies to the plain build")
+		return
+	}
 	if p99 > 5_000_000 {
 		t.Fatalf("p99 = %s, want under 5 ms with the database on localhost", microseconds(p99))
 	}

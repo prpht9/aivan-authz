@@ -200,6 +200,41 @@ func newEnvWithLog(t testing.TB, sink io.Writer) *env {
 	return e
 }
 
+// serverAtBodyLimit is a second gate on the same database and policy whose
+// only difference is the body limit, so a test can assert the limit came from
+// configuration rather than from a constant.
+func (e *env) serverAtBodyLimit(t testing.TB, maxBody int64) *env {
+	t.Helper()
+	copied := *e
+	g, err := gate.New(gate.Options{
+		Pool: e.pool, Table: testTable(t), Log: quiet(),
+		NonceTTL: 120 * time.Second, Skew: 300 * time.Second, MaxBody: maxBody,
+		SessionIdle: 15 * time.Minute, SessionMax: 8 * time.Hour,
+		Counter: e.counter, Now: func() time.Time { return e.now },
+		Page: gate.EmbeddedPage(),
+		// The limiter is not what this helper is about; a high one keeps a
+		// multi-request test from tripping it.
+		RatePerMinute: 6000, RateBurst: 6000,
+	})
+	if err != nil {
+		t.Fatalf("gate.New: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/__aivan/verify", g.Verify)
+	mux.HandleFunc("/__aivan/nonce", g.Nonce)
+	mux.HandleFunc("/__aivan/session", g.Session)
+	mux.HandleFunc(gate.EnrollPath, g.Enroll)
+	mux.HandleFunc("/__aivan/enroll/", g.EnrollAsset)
+	copied.server = httptest.NewServer(mux)
+	t.Cleanup(copied.server.Close)
+	client := copied.server.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	copied.client = client
+	return &copied
+}
+
 // testTable is the policy the tests run against. /admin is the admin class, /
 // and everything else requires an authenticated device.
 func testTable(t testing.TB) *policy.Table {

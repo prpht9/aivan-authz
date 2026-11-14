@@ -1,5 +1,7 @@
 # Phase B — skeleton, schema, privileges, health
 
+Status: complete (2026-11-13).
+
 Standalone work file. Prerequisites: Phase A complete (`doc/traefik-contract.md`
 exists). You do not need to re-read any other phase file.
 

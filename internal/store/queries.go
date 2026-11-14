@@ -6,6 +6,7 @@ const (
 	StmtVerify        = "aivan_verify"
 	StmtNonce         = "aivan_nonce_insert"
 	StmtPurge         = "aivan_nonce_purge"
+	StmtPurgeSessions = "aivan_session_purge"
 	StmtCountID       = "aivan_nonce_count"
 	StmtSessionMint   = "aivan_session_mint"
 	StmtSessionRead   = "aivan_session_read"
@@ -58,9 +59,26 @@ insert into authz.nonces (nonce_hash, device_id, issued_at, expires_at)
 values ($1, $2, now(), now() + $3)
 returning expires_at`
 
-// PurgeSQL removes every nonce past its expiry. Phase G adds a ticker for it;
-// until then the nonce handler runs it on its own once-a-minute schedule.
-const PurgeSQL = `delete from authz.nonces where expires_at < now()`
+// PurgeSQL removes every nonce that has been expired for longer than the purge
+// grace. The grace is not about validity — the verify predicate already
+// refuses an expired nonce — it is about the race: a nonce row is deleted by a
+// request's own `delete ... returning`, and deleting it out from under that
+// statement would turn a valid in-flight request into a replay.
+//
+// One hour is far longer than any request can take (the gate answers within
+// five seconds), so nothing can still be racing a row this removes.
+const PurgeSQL = `delete from authz.nonces where expires_at < now() - interval '1 hour'`
+
+// PurgeSessionsSQL removes sessions that are idle-expired or past their
+// absolute cap. The idle rule gets the same grace as the nonce rule, for the
+// same race: the read statement slides idle_expires_at, and a row removed
+// between that read and its commit would refuse a request that had already
+// passed. An absolutely expired session is past any grace by construction, so
+// it is removed as soon as it is seen.
+const PurgeSessionsSQL = `
+delete from authz.sessions
+ where idle_expires_at < now() - interval '1 hour'
+    or absolute_expires_at < now()`
 
 // NonceCountSQL counts the nonce table, for the table cap.
 const NonceCountSQL = `select count(*) from authz.nonces`
@@ -173,6 +191,7 @@ func GateStatements() []Statement {
 		{Name: StmtVerify, SQL: VerifySQL},
 		{Name: StmtNonce, SQL: NonceSQL},
 		{Name: StmtPurge, SQL: PurgeSQL},
+		{Name: StmtPurgeSessions, SQL: PurgeSessionsSQL},
 		{Name: StmtCountID, SQL: NonceCountSQL},
 		{Name: StmtSessionMint, SQL: SessionMintSQL},
 		{Name: StmtSessionRead, SQL: SessionReadSQL},

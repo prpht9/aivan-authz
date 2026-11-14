@@ -64,10 +64,6 @@ func NewRouterWith(o RouterOptions) http.Handler {
 		mux.HandleFunc("/__aivan/enroll/", o.Gate.EnrollAsset)
 	}
 
-	// Dev-only routes are mounted by their own file, which is built only with
-	// the devtools tag. The shipped image has none of them.
-	registerDevRoutes(mux)
-
 	var h http.Handler = mux
 	h = accessLog(o.Log)(h)
 	h = WithRequestID(o.Log)(h)
