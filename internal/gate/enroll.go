@@ -354,9 +354,14 @@ type claimResult struct {
 var errClaimRefused = errors.New("gate: enrollment claim refused")
 
 // claim consumes a pending record, creates the device it names, and mints the
-// session, in one transaction. Zero rows from the consume is a refusal, and a
-// concurrent claim of the same record loses the race there rather than
-// inserting an orphan device.
+// session, in one transaction. Zero rows from the function that consumes the
+// record is a refusal, and a concurrent claim of the same record loses the race
+// inside that function rather than inserting an orphan device.
+//
+// The device row is written by authz.enroll_device(), a security definer
+// function: the gate holds no INSERT on authz.devices, so completing an
+// enrollment is the one way it can create a credential, and that way requires
+// spending a code an operator minted.
 func (g *Gate) claim(ctx context.Context, c claim) ([16]byte, claimResult, error) {
 	var (
 		out      claimResult
@@ -374,24 +379,20 @@ func (g *Gate) claim(ctx context.Context, c claim) ([16]byte, claimResult, error
 
 	device := pgtype.UUID{Bytes: deviceID, Valid: true}
 
+	// The function consumes the record, inserts the device it names, and
+	// returns the identity it created. It returns no row when the code, origin,
+	// claim state or expiry do not match, which is the whole refusal.
 	var (
 		recordID pgtype.UUID
 		userID   int64
-		origin   string
 		kind     string
 	)
-	if err := tx.QueryRow(ctx, store.StmtEnrollClaim, device, c.CodeHash[:], c.Origin).
-		Scan(&recordID, &userID, &origin, &kind); err != nil {
+	if err := tx.QueryRow(ctx, store.StmtEnrollDevice,
+		device, c.CodeHash[:], c.Origin, c.Alg, c.PublicKey).
+		Scan(&userID, &kind, &out.Username, &recordID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return deviceID, out, errClaimRefused
 		}
-		return deviceID, out, err
-	}
-
-	// The device is created with the record's user, origin and kind, never the
-	// request's: the request has no user field and cannot name one (S11).
-	if _, err := tx.Exec(ctx, store.StmtEnrollDevice,
-		device, userID, origin, "enrolled "+kind, kind, c.PublicKey, c.Alg); err != nil {
 		// A second live device of one kind is the partial unique index. Two
 		// claims for two different records of the same slot can race here; the
 		// race is a refusal, not a 500.
@@ -401,16 +402,21 @@ func (g *Gate) claim(ctx context.Context, c claim) ([16]byte, claimResult, error
 		return deviceID, out, err
 	}
 
-	// The identity the response carries, read in the same transaction so the
-	// response cannot describe a user that was deactivated a moment ago.
+	// The origin is the one the request carried, and the function matched it
+	// against the record as a predicate, so the two are equal by the time this
+	// line is reached. The session and the audit row both name it.
+	origin := c.Origin
+
+	// The roles the response carries, read in the same transaction so the
+	// response cannot describe a membership that changed a moment ago.
 	if err := tx.QueryRow(ctx, `
-select u.username, coalesce(array_agg(g.name order by g.name)
-                            filter (where g.name is not null), '{}')
+select coalesce(array_agg(g.name order by g.name)
+                filter (where g.name is not null), '{}')
   from public.users u
   left join public.groups_users gu on gu.user_id = u.id
   left join public.groups g        on g.id = gu.group_id
  where u.id = $1
- group by u.username`, userID).Scan(&out.Username, &out.Roles); err != nil {
+ group by u.id`, userID).Scan(&out.Roles); err != nil {
 		return deviceID, out, err
 	}
 	if out.Roles == nil {

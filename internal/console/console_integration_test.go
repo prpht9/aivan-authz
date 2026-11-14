@@ -23,11 +23,23 @@ import (
 	"github.com/chris/aivan-authz/test/harness"
 )
 
-// setup builds the harness database and seeds an alice with a device and one
-// live session, plus a second device for the same person.
+// fixture is a scratch database seeded with an alice, a device she holds and a
+// second device of another kind, each with a live session.
+//
+// pool connects as the operator credential, because every command in this
+// package runs as one: aivan_core holds the revoke function and the read of
+// devices, and the gate's own credential holds neither (doc/schema-ownership.md
+// §4).
 type fixture struct {
-	pool    *pgxpool.Pool
+	// pool is the application credential: revoke and list-devices are hud's
+	// actions, and this is the role hud holds.
+	pool *pgxpool.Pool
+	// op is the operator credential: it owns schema authz, so it reads the
+	// scratch tables and runs the purge.
+	op      *pgxpool.Pool
 	service string
+	core    string
+	opDSN   string
 	super   string
 	device  [16]byte
 	sibling [16]byte
@@ -39,24 +51,26 @@ func setup(t *testing.T) fixture {
 	t.Helper()
 	service, super := harness.Setup(t)
 
-	db, err := store.Open(context.Background(), service)
+	core := harness.AsRole(t, super, harness.CoreRole)
+	db, err := store.Open(context.Background(), core)
 	if err != nil {
-		t.Fatalf("open: %v", err)
+		t.Fatalf("open as %s: %v", harness.CoreRole, err)
 	}
 	t.Cleanup(db.Close)
 
-	harness.Exec(t, super, `
-		delete from authz.devices;
-		delete from public.groups_users;
-		delete from public.groups;
-		delete from public.users;
-		insert into public.users (id, email, username, active) values
-			(1, 'alice@example.invalid', 'alice', true);
-		insert into public.groups (id, name) values (10, 'admin');
-		insert into public.groups_users (group_id, user_id) values (10, 1);
-	`)
+	opDSN := harness.Operator(t, super)
+	op, err := store.Open(context.Background(), opDSN)
+	if err != nil {
+		t.Fatalf("open as %s: %v", harness.MigrationRole, err)
+	}
+	t.Cleanup(op.Close)
 
-	f := fixture{pool: db.Pool, service: service, super: super}
+	harness.SeedUsers(t, super,
+		[]harness.User{{ID: 1, Username: "alice", Active: true}},
+		map[int64]string{10: "admin"},
+		map[int64][]int64{10: {1}})
+
+	f := fixture{pool: db.Pool, op: op.Pool, service: service, core: core, opDSN: opDSN, super: super}
 	f.device = insertDevice(t, super, 1, "aivan-hud.home.arpa", "browser")
 	f.sibling = insertDevice(t, super, 1, "aivan-hud.home.arpa", "phone")
 	f.token = insertSession(t, super, f.device, "15 minutes", "8 hours")
@@ -113,11 +127,11 @@ func revokedAt(t *testing.T, pool *pgxpool.Pool, device [16]byte) *time.Time {
 // revokes the device, kills only its sessions, and records the event.
 func TestRevokeDeletesSessionsAndWritesAudit(t *testing.T) {
 	f := setup(t)
-	if n := countSessions(t, f.pool); n != 2 {
+	if n := countSessions(t, f.op); n != 2 {
 		t.Fatalf("sessions before revoke = %d, want 2", n)
 	}
 
-	res, err := console.Revoke(context.Background(), f.pool, proof.FormatDeviceID(f.device), console.Hook{})
+	res, err := console.Revoke(context.Background(), f.pool, proof.FormatDeviceID(f.device), "operator")
 	if err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
@@ -131,18 +145,21 @@ func TestRevokeDeletesSessionsAndWritesAudit(t *testing.T) {
 		t.Errorf("user id = %d, want 1", res.UserID)
 	}
 
-	if revokedAt(t, f.pool, f.device) == nil {
+	if revokedAt(t, f.op, f.device) == nil {
 		t.Fatal("revoked_at was not set")
 	}
-	if n := countSessions(t, f.pool); n != 1 {
+	if n := countSessions(t, f.op); n != 1 {
 		t.Fatalf("sessions after revoke = %d, want the sibling's 1", n)
 	}
-	if revokedAt(t, f.pool, f.sibling) != nil {
+	if revokedAt(t, f.op, f.sibling) != nil {
 		t.Fatal("revoke touched the sibling device")
 	}
 
+	// The evidence is read as the operator: no application or gate credential
+	// can read authz.audit_log, which is what keeps a compromised process from
+	// scrubbing the record of itself.
 	var decision, reason string
-	if err := f.pool.QueryRow(context.Background(), `
+	if err := f.op.QueryRow(context.Background(), `
 select decision, reason from authz.audit_log
  where device_id = $1 order by id desc limit 1`, proof.FormatDeviceID(f.device)).Scan(&decision, &reason); err != nil {
 		t.Fatalf("read audit row: %v", err)
@@ -158,10 +175,10 @@ func TestRevokeIsIdempotent(t *testing.T) {
 	f := setup(t)
 	id := proof.FormatDeviceID(f.device)
 
-	if _, err := console.Revoke(context.Background(), f.pool, id, console.Hook{}); err != nil {
+	if _, err := console.Revoke(context.Background(), f.pool, id, "operator"); err != nil {
 		t.Fatalf("first revoke: %v", err)
 	}
-	res, err := console.Revoke(context.Background(), f.pool, id, console.Hook{})
+	res, err := console.Revoke(context.Background(), f.pool, id, "operator")
 	if err != nil {
 		t.Fatalf("second revoke: %v", err)
 	}
@@ -178,7 +195,7 @@ func TestRevokeIsIdempotent(t *testing.T) {
 func TestRevokeUnknownDeviceIsAnError(t *testing.T) {
 	f := setup(t)
 	_, err := console.Revoke(context.Background(), f.pool,
-		"3f2504e0-4f89-41d3-9a0c-0305e82c3301", console.Hook{})
+		"3f2504e0-4f89-41d3-9a0c-0305e82c3301", "operator")
 	if err == nil {
 		t.Fatal("revoke of an unknown device succeeded")
 	}
@@ -187,17 +204,20 @@ func TestRevokeUnknownDeviceIsAnError(t *testing.T) {
 	}
 
 	for _, bad := range []string{"", "not-a-uuid", strings.Repeat("0", 36)} {
-		if _, err := console.Revoke(context.Background(), f.pool, bad, console.Hook{}); err == nil {
+		if _, err := console.Revoke(context.Background(), f.pool, bad, "operator"); err == nil {
 			t.Errorf("revoke accepted %q", bad)
 		}
 	}
 }
 
-// TestRevokeIsTransactionalAcrossACrash is D7's mid-flight kill. The helper
-// test below re-executes this binary, revokes with a hook that SIGKILLs the
-// process after revoked_at is set and before the sessions are deleted, and the
-// parent then asserts the database has neither a revoked device nor a deleted
-// session.
+// TestRevokeIsTransactionalAcrossACrash is D7's mid-flight kill, expressed
+// against the function that performs the revoke now.
+//
+// authz.revoke_device() sets revoked_at, deletes the device's sessions and
+// writes the audit row as one transaction. The helper below runs it inside a
+// client transaction of its own and SIGKILLs the process before the commit, so
+// the database sees exactly what a power loss between the statements looks like:
+// a connection that drops with an open transaction.
 func TestRevokeIsTransactionalAcrossACrash(t *testing.T) {
 	f := setup(t)
 	id := proof.FormatDeviceID(f.device)
@@ -205,7 +225,7 @@ func TestRevokeIsTransactionalAcrossACrash(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestRevokeCrashHelper$", "-test.v")
 	cmd.Env = append(os.Environ(),
 		crashEnv+"=1",
-		"AIVAN_CRASH_DSN="+f.service,
+		"AIVAN_CRASH_DSN="+f.core,
 		"AIVAN_CRASH_DEVICE="+id,
 	)
 	out, err := cmd.CombinedOutput()
@@ -217,28 +237,28 @@ func TestRevokeIsTransactionalAcrossACrash(t *testing.T) {
 	if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
 		t.Fatalf("helper exit = %v, want SIGKILL; output: %s", exitErr, out)
 	}
-	if !strings.Contains(string(out), "helper: revoked_at set") {
+	if !strings.Contains(string(out), "helper: revoke called, not committed") {
 		t.Fatalf("helper did not reach the crash point; output: %s", out)
 	}
 
 	// Neither half survived: PostgreSQL rolled the whole transaction back.
-	if at := revokedAt(t, f.pool, f.device); at != nil {
+	if at := revokedAt(t, f.op, f.device); at != nil {
 		t.Fatalf("revoked_at survived the crash: %s", at)
 	}
-	if n := countSessions(t, f.pool); n != 2 {
+	if n := countSessions(t, f.op); n != 2 {
 		t.Fatalf("sessions after the crash = %d, want both still live", n)
 	}
 
 	// A retry after the crash completes the revoke, so an operator who sees a
 	// killed process can simply run the command again.
-	res, err := console.Revoke(context.Background(), f.pool, id, console.Hook{})
+	res, err := console.Revoke(context.Background(), f.pool, id, "operator")
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if res.Sessions != 1 {
 		t.Fatalf("retry deleted %d sessions, want 1", res.Sessions)
 	}
-	if at := revokedAt(t, f.pool, f.device); at == nil {
+	if at := revokedAt(t, f.op, f.device); at == nil {
 		t.Fatal("retry did not set revoked_at")
 	}
 }
@@ -247,6 +267,11 @@ const crashEnv = "AIVAN_CRASH_HELPER"
 
 // TestRevokeCrashHelper is the child half of the crash test. It is skipped
 // unless the parent started it, so a normal run never kills a process.
+//
+// It connects with the operator credential, because the gate's credential is
+// refused EXECUTE on authz.revoke_device and that refusal is a different test.
+// It uses a single connection rather than the pool so the process can be killed
+// with its transaction still open.
 func TestRevokeCrashHelper(t *testing.T) {
 	if os.Getenv(crashEnv) == "" {
 		t.Skip("helper for TestRevokeIsTransactionalAcrossACrash")
@@ -254,24 +279,27 @@ func TestRevokeCrashHelper(t *testing.T) {
 	dsn := os.Getenv("AIVAN_CRASH_DSN")
 	id := os.Getenv("AIVAN_CRASH_DEVICE")
 
-	db, err := store.Open(context.Background(), dsn)
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
-		t.Fatalf("open: %v", err)
+		t.Fatalf("connect: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = conn.Close(context.Background()) }()
 
-	_, err = console.Revoke(context.Background(), db.Pool, id, console.Hook{
-		AfterUpdate: func(context.Context, pgx.Tx) error {
-			// The device row is updated and no session is deleted yet. Killing
-			// here is what a power loss between the two statements looks like
-			// to PostgreSQL: the connection drops and the transaction rolls
-			// back.
-			fmt.Println("helper: revoked_at set")
-			_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
-			select {} // unreachable; SIGKILL is not catchable
-		},
-	})
-	t.Fatalf("revoke returned instead of dying: %v", err)
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	// The function has run inside the transaction: the device row is updated
+	// and its sessions are deleted, and none of it is visible outside. Killing
+	// here is what a power loss between the statements looks like.
+	if _, err := tx.Exec(ctx, `select * from authz.revoke_device($1, 'crash-helper')`, id); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("revoke_device: %v", err)
+	}
+	fmt.Println("helper: revoke called, not committed")
+	_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+	select {} // unreachable; SIGKILL is not catchable
 }
 
 // TestListDevices prints one person's devices and nothing of anyone else's.

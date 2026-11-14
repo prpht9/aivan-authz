@@ -73,6 +73,11 @@ type env struct {
 	service string
 	super   string
 	pool    *pgxpool.Pool
+	// admin reads through a credential the gate does not hold: a real row in
+	// authz.pending_enrollments, authz.audit_log, or another person's session.
+	// The gate's own grants refuse those reads, so an assertion that used pool
+	// would be measuring the harness rather than the design.
+	admin   *pgxpool.Pool
 	counter *store.Counter
 	gate    *gate.Gate
 	server  *httptest.Server
@@ -151,8 +156,11 @@ func newEnvWithLog(t testing.TB, sink io.Writer) *env {
 	if sink, ok := sink.(*logBuffer); ok {
 		logs = sink
 	}
+	admin := harness.Pool(t, super)
+
 	e := &env{
-		t: t, service: service, super: super, pool: db.Pool, counter: counter, logBuf: logs,
+		t: t, service: service, super: super, pool: db.Pool, admin: admin,
+		counter: counter, logBuf: logs,
 		// Truncated to the second so a timestamp and the database's now()
 		// agree on the same instant without sub-second races. The app clock is
 		// injected and the verifier reads only it for skew; the database clock
@@ -272,19 +280,14 @@ const (
 // in no group at all.
 func (e *env) seedUsers() {
 	e.t.Helper()
-	harness.Exec(e.t, e.super, `
-		delete from authz.devices;
-		delete from public.groups_users;
-		delete from public.groups;
-		delete from public.users;
-		insert into public.users (id, email, username, active) values
-			(1, 'alice@example.invalid', 'alice', true),
-			(2, 'bob@example.invalid', 'bob', true),
-			(3, 'carol@example.invalid', 'carol', false);
-		insert into public.groups (id, name) values (10, 'admin'), (11, 'free');
-		insert into public.groups_users (group_id, user_id) values
-			(10, 1), (11, 1), (11, 2);
-	`)
+	harness.SeedUsers(e.t, e.super,
+		[]harness.User{
+			{ID: userAlice, Username: "alice", Active: true},
+			{ID: userBob, Username: "bob", Active: true},
+			{ID: 3, Username: "carol", Active: false},
+		},
+		map[int64]string{10: "admin", 11: "free"},
+		map[int64][]int64{10: {userAlice}, 11: {userAlice, userBob}})
 }
 
 // enroll inserts a device row and returns the key material that signs for it.

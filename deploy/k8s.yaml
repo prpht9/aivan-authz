@@ -27,7 +27,10 @@
 #
 #   create role aivan_authz login nosuperuser nocreatedb nocreaterole password '<pw>';
 #
-# then `authz migrate` runs as aivan_migrations, which owns schema authz.
+# The schema and the grants belong to aivan-hud's migration history now
+# (doc/schema-handover.md §2): `rake db:migrate` runs as aivan_migrations, which
+# owns schema authz. There is no migrate step at boot; the gate starts, probes
+# its grants, and serves.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -80,7 +83,7 @@ spec:
       labels: { app: aivan-authz }
     spec:
       automountServiceAccountToken: false
-      # The gate's drain is 10 s (cmd/authz drainTimeout), so the kubelet must
+      # The gate's drain is 10 s (cmd/authz-gate drainTimeout), so the kubelet must
       # not SIGKILL before it finishes. Twenty seconds leaves the drain plus the
       # time between SIGTERM and the endpoint being removed from the Service.
       terminationGracePeriodSeconds: 20
@@ -177,10 +180,9 @@ spec:
 # router on the application's host. A router bound to a host of the gate's own
 # would be a second way in.
 #
-# The NetworkPolicy admits Traefik and nothing else. An operator minting an
-# enrollment with `authz enroll-new --username … --origin … --kind browser`
-# does it with the database secret through a port-forward, which
-# needs no network hole here.
+# The NetworkPolicy admits Traefik and nothing else. Minting an enrollment is a
+# hud action, and `kubectl exec` with the operator credential is the break-glass
+# path; neither needs a network hole here.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -216,6 +218,121 @@ spec:
       ports:
         - { protocol: TCP, port: 5432 }
     # DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# The purge, as a schedule rather than a ticker inside the gate.
+#
+# Two reasons it left the gate. The gate's credential holds DML on authz.nonces
+# and authz.sessions — a session ends with a delete and a nonce is spent by one —
+# but removing *expired* rows is administration, and the admin binary is the
+# thing that holds an operator credential. Keeping the pass here means the pod
+# runs only the serve path (doc/schema-handover.md §5 and §9 step 6).
+#
+# The image is not the gate's. `authz-admin purge` is in a binary that never
+# enters the gate image, so the schedule runs the same statements through psql
+# with the operator credential. Keeping the two binaries separate is what makes
+# "the pod cannot administer" a property of the image rather than of a policy
+# someone remembers.
+#
+# The credential is its own Secret (aivan-authz-purge), not the gate's and not
+# hud's:
+#
+#   kubectl -n "$AIVAN_NS" create secret generic aivan-authz-purge #     --from-literal password='<aivan_migrations pw>'
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: aivan-authz-purge
+  namespace: ${AIVAN_NS}
+  labels: { app: aivan-authz-purge }
+spec:
+  # Every fifteen minutes. The gate measures the nonce table cap once a minute,
+  # so a full table is still refused long before this runs; the schedule only has
+  # to keep the table from growing across an idle period.
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # A pass that cannot finish in two minutes is a database problem, and the
+      # next pass will pick up what this one left.
+      activeDeadlineSeconds: 120
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: purge
+              # The admin binary is not published to the registry: it is a
+              # break-glass tool. The purge is one SQL statement pair, so the
+              # schedule runs psql instead, with the same credential hud uses.
+              image: postgres:14-alpine
+              command:
+                - psql
+                - --no-psqlrc
+                - --quiet
+                - --command
+                # Both statements in one transaction, so a failure of the second
+                # does not leave the first applied. The grace matches
+                # internal/console.PurgeGrace: a row deleted while a request is
+                # still racing its own delete ... returning would turn a valid
+                # request into a replay.
+                - >-
+                  begin;
+                  delete from authz.nonces where expires_at < now() - interval '1 hour';
+                  delete from authz.sessions
+                   where idle_expires_at < now() - interval '1 hour'
+                      or absolute_expires_at < now();
+                  commit;
+              env:
+                - name: PGHOST
+                  value: aivan-core-rw.aivan-core.svc.cluster.local
+                - name: PGDATABASE
+                  value: aivan_core
+                - name: PGUSER
+                  value: aivan_migrations
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef: { name: aivan-authz-purge, key: password }
+                - name: PGSSLMODE
+                  value: require
+              resources:
+                requests: { cpu: 10m, memory: 16Mi }
+                limits:   { cpu: 200m, memory: 64Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+---
+# The purge pod's egress: Postgres, and DNS to find it. The gate's egress policy
+# selects `app: aivan-authz` and does not admit this job, so the two are separate
+# on purpose: the gate has no business opening a connection the CronJob needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aivan-authz-purge-egress
+  namespace: ${AIVAN_NS}
+spec:
+  podSelector:
+    matchLabels: { app: aivan-authz-purge }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: aivan-core }
+      ports:
+        - { protocol: TCP, port: 5432 }
     - to:
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: kube-system }

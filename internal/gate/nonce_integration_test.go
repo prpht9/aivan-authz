@@ -176,9 +176,11 @@ func TestNonceEndpointTableCap(t *testing.T) {
 		  from generate_series(1, %d) as i
 	`, formatID(d.ID), gate.NonceTableCap))
 
-	// The first nonce request runs purge, which removes every one of those
-	// expired rows, so the table is empty again by the time the cap is read.
-	// To observe the cap, the rows must be live.
+	// The rows are inserted already expired and then made live, because the
+	// cap counts every row and a check that a full table is refused should not
+	// depend on which rows are still within their TTL. The gate used to remove
+	// them on its own schedule; it does not any more, which is why they stay
+	// until the admin binary's CronJob runs.
 	harnessAlter(t, e.super, `
 		update authz.nonces set expires_at = now() + interval '1 hour'
 	`)
@@ -214,18 +216,20 @@ func TestNonceMethodIsPostOnly(t *testing.T) {
 	}
 }
 
-// TestNonceStatementCount: an issued nonce plus the scheduled maintenance is
-// more than one statement, and the test pins that the endpoint's own cost is
-// the insert alone once maintenance has run for the minute.
+// TestNonceStatementCount: the first request of a maintenance minute pays the
+// cap count, and the endpoint's own cost is the insert alone until the next one.
+// The count is the gate's only scheduled work now, so this also pins that the
+// per-request cost did not grow when the purge left.
 func TestNonceStatementCount(t *testing.T) {
 	e := newEnv(t)
 	e.seedUsers()
 	d := e.enroll(userAlice, testHost, "browser", "ed25519")
 
-	// First request runs maintenance (purge + count) and the insert.
+	// First request runs maintenance (the cap count) and the insert.
 	e.post("/__aivan/nonce", fmt.Sprintf(`{"device":%q}`, formatID(d.ID)), nil).Body.Close()
 
-	// Within the same maintenance minute, a second request is the insert only.
+	// Within the same maintenance interval, a second request is the insert
+	// only.
 	e.counter.Reset()
 	resp := e.post("/__aivan/nonce", fmt.Sprintf(`{"device":%q}`, formatID(d.ID)), nil)
 	resp.Body.Close()

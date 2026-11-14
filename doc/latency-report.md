@@ -133,18 +133,22 @@ size was the one that mattered, and it mattered only for the first second.
 ## Reproducing
 
 ```console
-# 1. A scratch database with the fixture and the migrations.
+# 1. A scratch database with the schema. The migrations live in aivan-hud now
+#    (doc/schema-handover.md §2): there is no migrate step in this project.
 createdb aivan_load
-psql -d aivan_load -f test/fixtures/hud_min.sql
-AIVAN_DB_URL=postgres://.../aivan_load go run ./cmd/authz migrate
+(cd ../aivan-hud && DATABASE_URL=postgres://.../aivan_load bundle exec rake db:migrate)
+# The grants are described by the same run; a load credential that holds them is
+# aivan_authz on an install, or the owner on a scratch database.
 
 # 2. One person and one device key, plus 100k nonces.
-psql -d aivan_load -c "insert into public.users (id, username, active) values (10,'loaduser',true)"
+#    hud's own migration creates public.users, so only the row is needed.
+psql -d aivan_load -c "insert into public.users (id, email, username, active, password_digest, created_at, updated_at)
+  values (10,'load@example.invalid','loaduser',true,'x',now(),now())"
 eval "$(go run ./test/load/seed -dsn "$DSN" -user 10 -count 100000 -kind tablet -jwk-env)"
 
 # 3. The gate.
 AIVAN_DB_URL=$DSN AIVAN_HOSTS=aivan-hud.home.arpa AIVAN_POLICY=./policy.yaml \
-  AIVAN_LISTEN=127.0.0.1:18080 ./authz serve
+  AIVAN_LISTEN=127.0.0.1:18080 ./bin/authz-gate serve
 
 # 4. Handler-only.
 k6 run -e AIVAN_PROFILE=steady200 -e AIVAN_VIA=handler \

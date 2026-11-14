@@ -413,23 +413,33 @@ Two console steps, split because this service cannot write `public.users`:
 
 ### 7.1 Ownership
 
-The service owns the tables that describe authentication state and reads the
-tables that describe identity. Its tables live in their own schema, so
-ownership is a namespace rather than a naming convention.
+Amended 2026-11-14 (see `doc/schema-handover.md`): **the service owns nothing.**
+Every schema object in `authz` belongs to aivan-hud's migration history, and
+`aivan_migrations` is the role that owns it. This service holds the narrowest
+grants that let it serve, and `aivan-hud/doc/schema-ownership.md` defines them.
 
 | Table | Access |
 |---|---|
 | `users` | read `id`, `username`, `active` only |
 | `groups`, `groups_users` | read |
-| `authz.devices` | read and write |
+| `authz.devices` | read; update `last_seen_at` only |
+| `authz.enroll_device()` | execute, which is the only way to create a device |
 | `authz.nonces` | read and write |
 | `authz.sessions` | read and write |
-| `authz.pending_enrollments` | read and write |
-| `authz.audit_log` | append |
+| `authz.pending_enrollments` | none; the function consumes the record |
+| `authz.audit_log` | append, and never read |
+| `authz.services`, `authz.approvals` | read |
 
 The service has no access to `password_digest`. That is enforced by a
 column-level grant rather than by a code path, and verified at boot (S16, S20).
 It has no access to any application table that is not listed above.
+
+It also cannot create or destroy a credential. `insert` on `devices`,
+`delete` on `devices`, `update` of any device column but `last_seen_at`, and
+`execute` on `authz.revoke_device()` are all absent, and the boot probe refuses
+to start a credential that holds them. The absence is the control: a
+compromised gate can read identity and spend authority that already exists, and
+it cannot mint, re-key, or revoke.
 
 Because the gate consumes a nonce before it verifies the signature — the
 ordering that makes a replay lose the race — a `nonce` cannot carry a foreign

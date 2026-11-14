@@ -5,11 +5,38 @@ Picking this project up in a fresh session: read this page, then one document.
 ## If you are changing the gate's runtime
 
 `doc/schema-handover.md` — what leaves this project, the two-binary split, the
-statement changes, the boot probe. It is the current instruction set.
+statement changes, the boot probe. It is the current instruction set, and it has
+been implemented: the two binaries exist, the schema has moved, and the boot
+probe asserts the absences it names.
 
 The short version: this project keeps the algorithm (canonical strings,
 signatures, policy, the verify path) and gives up the schema and the
-administration. Schema and DDL move to aivan-hud.
+administration.
+
+## Two binaries, one module
+
+| Binary | Where it runs | What it does |
+|---|---|---|
+| `cmd/authz-gate` | the pod, from `deploy/Dockerfile` | `serve` only |
+| `cmd/authz-admin` | a workstation, never an image | `enroll-new`, `list-devices`, `revoke`, `purge`, `service` |
+
+`make build` produces both in `bin/`. `make image` builds an image containing
+only the gate; `TestGateBinaryHasNoAdminCommands` and
+`TestDockerfileBuildsOnlyTheGate` are what keep it that way.
+
+## Where the schema lives
+
+`aivan-hud/db/migration/`. This repository contains no DDL and no migration
+runner. The integration harness applies hud's migrations to a scratch database,
+so the tests run against the schema an install actually has:
+
+```console
+$ make testdb        # needs a Postgres the test user can create roles in
+```
+
+`AIVAN_TEST_SUPERUSER_URL` defaults to `postgres://postgres@localhost/postgres`.
+The harness skips rather than fails when no cluster is reachable or when the
+`aivan-hud` checkout is absent.
 
 ## Reference, not instruction
 
@@ -18,7 +45,7 @@ administration. Schema and DDL move to aivan-hud.
 | `doc/aivan-initial-spec.md` | what the service must be. §6.3 came amended on 2026-11-14 |
 | `doc/aivan-initial-plan.md` | how it was built, phase by phase. §4.1 and §9 are superseded |
 | `doc/design-notes.md` | the reasoning behind the decisions |
-| `doc/runbook.md` | the operator procedure as executed in November 2026 |
+| `doc/runbook.md` | the operator procedure, amended 2026-11-14 for the handover |
 | `doc/phase-*-record.md` | what each phase actually produced |
 | `implementation-phase-*.md` | the standalone work files for phases A–G |
 

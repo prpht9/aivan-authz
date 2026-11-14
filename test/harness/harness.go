@@ -1,17 +1,25 @@
 //go:build integration
 
 // Package harness builds a scratch database for integration tests: the hud
-// fixture, the aivan_authz service role, and the gate's migrations. It mirrors
-// what the install step does on a real cluster, because the migration that
-// grants column-level access depends on the application's tables existing.
+// fixture, the roles the grant matrix names, and the schema from aivan-hud's
+// own migrations.
+//
+// It runs aivan-hud's migrations rather than a copy of the DDL. The DDL used to
+// live in this repository and was embedded in the gate's binary; it lives in
+// aivan-hud's history now (doc/schema-handover.md §2), and a test that applied a
+// local copy would pass against a schema nobody deploys. A scratch database with
+// no ruby on the host cannot be set up this way, and the harness skips rather
+// than pretends.
 package harness
 
 import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -20,17 +28,26 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/chris/aivan-authz/internal/store"
 )
 
-// ServiceRole is the role 0002_grants.sql names. Another name would leave the
-// grants pointing at a role that does not exist.
+// ServiceRole is the role the gate runs as. The grant matrix names it, so
+// another name would leave the grants pointing at a role that does not exist.
 const ServiceRole = "aivan_authz"
+
+// CoreRole is the application's role: it reads devices and revokes through the
+// definer function, and writes nothing in authz otherwise.
+const CoreRole = "aivan_core"
+
+// MigrationRole owns schemas public and authz and runs the migrations.
+const MigrationRole = "aivan_migrations"
 
 // DefaultSuperuser is where the integration tests expect a cluster they may
 // create roles and databases on.
 const DefaultSuperuser = "postgres://postgres@localhost/postgres"
+
+// hudDir is the companion checkout whose migrations own the schema. It is a
+// symlink in this repository's tree, recorded next to the README.
+const hudDir = "aivan-hud"
 
 // Env skips the test when no cluster is reachable.
 func Env(t testing.TB) {
@@ -38,10 +55,16 @@ func Env(t testing.TB) {
 	if super := superuserDSN(); !reachable(super) {
 		t.Skipf("no superuser database at %s; set AIVAN_TEST_SUPERUSER_URL", super)
 	}
+	if !hudMigrationsAvailable() {
+		t.Skipf("no %s/db/migration with a Rakefile; the schema belongs to aivan-hud "+
+			"(doc/schema-handover.md §2), so the integration suite cannot build one", hudDir)
+	}
 }
 
-// Setup creates a scratch database with the fixture, the service role and the
-// migrations applied, and returns DSNs for it. Cleanup is registered on t.
+// Setup creates a scratch database with the application's schema, the roles the
+// grant matrix names, and aivan-hud's migrations applied. It returns DSNs for
+// the gate's credential and the migration credential. Cleanup is registered on
+// t.
 func Setup(t testing.TB) (service, super string) {
 	t.Helper()
 	Env(t)
@@ -56,21 +79,22 @@ func Setup(t testing.TB) (service, super string) {
 	}
 	defer func() { _ = admin.Close(ctx) }()
 
-	ensureRole(t, ctx, admin)
+	ensureRoles(t, ctx, admin)
 
-	// The hud fixture stands in for the application's schema. It is applied as
-	// the owner, which is how application migrations run in production.
-	applyFile(t, ctx, super, fixturePath(t, "hud_min.sql"))
+	// The application's schema and the authz schema both come from aivan-hud's
+	// migrations, run the way the install runs them. There is no fixture: a
+	// local copy of public.users would let a test pass against a shape the
+	// application does not have.
+	migrate(t, super)
 
-	// Migrations run as the owner, as the install step does.
-	pool, err := pgxpool.New(ctx, super)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	defer pool.Close()
-	if _, err := store.Migrate(ctx, pool); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	// On an install, `public` belongs to the application role and `authz` to
+	// the migration role (README_HOME_INSTALL.md stage 1). The migration above
+	// ran as the cluster superuser, so the ownership the install provisions is
+	// applied here. Without it, a test that runs a console command as
+	// aivan_core would fail on public.users rather than on the grant under
+	// test.
+	ownPublic(t, super)
+
 	return service, super
 }
 
@@ -131,6 +155,68 @@ func Exec(t testing.TB, dsn, sql string) {
 	}
 }
 
+// User is one person a test needs. Only the fields the gate reads have a
+// meaning here; the rest are filled with values the application's own schema
+// requires.
+type User struct {
+	ID       int64
+	Username string
+	Email    string
+	Active   bool
+}
+
+// SeedUsers replaces the people and groups in a scratch database. It deletes
+// first, in dependency order, so a test starts from a known set rather than
+// from whatever the previous one left.
+//
+// The column list is the application's own: hud requires an email, both
+// timestamps and a password digest, and a test that inserted only the three
+// columns the gate reads would be testing a schema the application does not
+// have.
+func SeedUsers(t testing.TB, super string, users []User, groups map[int64]string, members map[int64][]int64) {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString(`
+		delete from authz.sessions;
+		delete from authz.nonces;
+		delete from authz.pending_enrollments;
+		delete from authz.devices;
+		delete from public.groups_users;
+		delete from public.groups;
+		delete from public.users;
+	`)
+	for _, u := range users {
+		email := u.Email
+		if email == "" {
+			email = u.Username + "@example.invalid"
+		}
+		fmt.Fprintf(&b, `insert into public.users (id, email, username, active, password_digest, created_at, updated_at)
+values (%d, %s, %s, %t, 'x', now(), now());`, u.ID, literal(email), literal(u.Username), u.Active)
+	}
+	for id, name := range groups {
+		fmt.Fprintf(&b, `insert into public.groups (id, name, created_at, updated_at)
+values (%d, %s, now(), now());`, id, literal(name))
+	}
+	for group, ids := range members {
+		for _, u := range ids {
+			fmt.Fprintf(&b, `insert into public.groups_users (group_id, user_id) values (%d, %d);`, group, u)
+		}
+	}
+	Exec(t, super, b.String())
+}
+
+// Pool opens a pool as a superuser against dsn, for assertions that need to read
+// a table the gate's credential may not read.
+func Pool(t testing.TB, dsn string) *pgxpool.Pool {
+	t.Helper()
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
 func superuserDSN() string {
 	if v := os.Getenv("AIVAN_TEST_SUPERUSER_URL"); v != "" {
 		return v
@@ -188,39 +274,112 @@ func createDatabase(t testing.TB, superDSN string) string {
 	return withDatabase(t, superDSN, name)
 }
 
-// ensureRole creates the service role if it is missing. The grant migration
-// names it, and the service DSN cannot connect without it.
-func ensureRole(t testing.TB, ctx context.Context, admin *pgx.Conn) {
+// ensureRoles creates the three roles the grant matrix names. The migration
+// migration skips its grant half when any is missing, which would make every
+// grant assertion in the suite vacuous, so they are created here.
+func ensureRoles(t testing.TB, ctx context.Context, admin *pgx.Conn) {
 	t.Helper()
-	var exists bool
-	if err := admin.QueryRow(ctx,
-		`select exists (select 1 from pg_roles where rolname = $1)`, ServiceRole).Scan(&exists); err != nil {
-		t.Fatalf("check role: %v", err)
-	}
-	if exists {
-		return
-	}
-	stmt := `create role ` + ident(ServiceRole) + ` login nosuperuser nocreatedb nocreaterole`
-	if u, err := url.Parse(serviceDSN()); err == nil && u.User != nil {
-		if pw, ok := u.User.Password(); ok {
-			stmt += ` password ` + literal(pw)
+	for _, role := range []string{ServiceRole, CoreRole, MigrationRole} {
+		var exists bool
+		if err := admin.QueryRow(ctx,
+			`select exists (select 1 from pg_roles where rolname = $1)`, role).Scan(&exists); err != nil {
+			t.Fatalf("check role %s: %v", role, err)
 		}
-	}
-	if _, err := admin.Exec(ctx, stmt); err != nil {
-		t.Fatalf("create role: %v", err)
+		if exists {
+			continue
+		}
+		stmt := `create role ` + ident(role) + ` login nosuperuser nocreatedb nocreaterole`
+		if role == ServiceRole {
+			if u, err := url.Parse(serviceDSN()); err == nil && u.User != nil {
+				if pw, ok := u.User.Password(); ok {
+					stmt += ` password ` + literal(pw)
+				}
+			}
+		}
+		if _, err := admin.Exec(ctx, stmt); err != nil {
+			t.Fatalf("create role %s: %v", role, err)
+		}
 	}
 }
 
-func applyFile(t testing.TB, ctx context.Context, dsn, path string) {
+// ownPublic applies the ownership and public-schema grants the install
+// provisions (README_HOME_INSTALL.md stage 1). The migrations run as the cluster
+// superuser in a test, so the half they cannot do on an install — public belongs
+// to the application role — has to be applied here.
+//
+// Without it a console command run as aivan_core would fail on public.users, and
+// a test would be measuring the harness rather than the grant under test.
+func ownPublic(t testing.TB, super string) {
 	t.Helper()
-	body, err := os.ReadFile(path) // #nosec G304 -- path is built from the test's own location
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+	Exec(t, super, `
+		alter schema public owner to `+ident(CoreRole)+`;
+		alter table public.users             owner to `+ident(CoreRole)+`;
+		alter table public.groups            owner to `+ident(CoreRole)+`;
+		alter table public.groups_users      owner to `+ident(CoreRole)+`;
+		alter table public.schema_migrations owner to `+ident(CoreRole)+`;
+		grant create on schema public to `+ident(CoreRole)+`;
+
+		-- The operator role: it owns authz and the definer functions read
+		-- public.users from inside them, so it holds the minimum on public.
+		grant usage on schema public                  to `+ident(MigrationRole)+`;
+		grant references on public.users              to `+ident(MigrationRole)+`;
+		grant select (id, username, active) on public.users  to `+ident(MigrationRole)+` with grant option;
+		grant select (id, name)             on public.groups to `+ident(MigrationRole)+` with grant option;
+		grant select                        on public.groups_users to `+ident(MigrationRole)+` with grant option;
+
+		-- The gate's read on the public side. It never sees password_digest.
+		grant usage on schema public to `+ident(ServiceRole)+`;
+		grant select (id, username, active) on public.users  to `+ident(ServiceRole)+`;
+		grant select (id, name)             on public.groups to `+ident(ServiceRole)+`;
+		grant select                        on public.groups_users to `+ident(ServiceRole)+`;
+		revoke create on schema public from `+ident(ServiceRole)+`;
+	`)
+}
+
+// Operator is the DSN a command that needs no application authority uses: the
+// migration role, which owns `authz`. The CronJob and the break-glass admin
+// commands run as this or as a superuser supplied at the terminal.
+func Operator(t testing.TB, super string) string {
+	t.Helper()
+	return AsRole(t, super, MigrationRole)
+}
+
+// hudMigrationsAvailable reports whether this checkout can run hud's
+// migrations: the directory exists, and the host has the ruby to run them.
+func hudMigrationsAvailable() bool {
+	root := repoRoot()
+	if root == "" {
+		return false
 	}
-	conn := connect(t, dsn)
-	defer func() { _ = conn.Close(ctx) }()
-	if _, err := conn.Exec(ctx, string(body)); err != nil {
-		t.Fatalf("apply %s: %v", path, err)
+	if _, err := os.Stat(filepath.Join(root, hudDir, "db", "migration")); err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(root, hudDir, "Rakefile")); err != nil {
+		return false
+	}
+	_, err := exec.LookPath("bundle")
+	return err == nil
+}
+
+// migrate runs `rake db:migrate` in the hud checkout as the migration role. The
+// migrations guard every object with IF NOT EXISTS and CREATE OR REPLACE, so a
+// fresh database and a repaired one take the same path.
+//
+// The connection goes over the unix socket when no host is in the DSN, because
+// rake's own default is the socket, and a test cluster on localhost may not
+// accept a password over TCP.
+func migrate(t testing.TB, super string) {
+	t.Helper()
+	root := repoRoot()
+	if root == "" {
+		t.Fatal("cannot locate the repository root")
+	}
+
+	cmd := exec.Command("bundle", "exec", "rake", "db:migrate")
+	cmd.Dir = filepath.Join(root, hudDir)
+	cmd.Env = append(os.Environ(), "DATABASE_URL="+super)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("aivan-hud migrate: %v\n%s", err, out)
 	}
 }
 
@@ -251,15 +410,14 @@ func databaseName(dsn string) string {
 	return strings.TrimPrefix(u.Path, "/")
 }
 
-func fixturePath(t testing.TB, name string) string {
-	t.Helper()
+// repoRoot is the directory holding go.mod, found from this file's location.
+func repoRoot() string {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("runtime.Caller failed")
+		return ""
 	}
 	// This file lives in <root>/test/harness.
-	root := filepath.Dir(filepath.Dir(filepath.Dir(file)))
-	return filepath.Join(root, "test", "fixtures", name)
+	return filepath.Dir(filepath.Dir(filepath.Dir(file)))
 }
 
 func suffix(t testing.TB) string {

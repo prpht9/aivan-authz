@@ -132,7 +132,7 @@ func (e *env) mintPending(userID int64, origin, kind string, ttl time.Duration) 
 func (e *env) pendingRecord(code string) (id string, claimedAt *time.Time, deviceID *string) {
 	e.t.Helper()
 	hash := proof.SHA256Sum([]byte(proof.NormalizeEnrollCode(code)))
-	err := e.pool.QueryRow(context.Background(), `
+	err := e.admin.QueryRow(context.Background(), `
 select id::text, claimed_at, claimed_device_id::text
   from authz.pending_enrollments where code_hash = $1`, hash[:]).Scan(&id, &claimedAt, &deviceID)
 	if err != nil {
@@ -946,7 +946,7 @@ func TestClaimWritesAnAuditRow(t *testing.T) {
 		deviceID         string
 		subject          *string
 	)
-	if err := e.pool.QueryRow(context.Background(), `
+	if err := e.admin.QueryRow(context.Background(), `
 select decision, reason, user_id, device_id::text, subject_id::text
   from authz.audit_log where route = '/__aivan/enroll' order by id desc limit 1`,
 	).Scan(&decision, &reason, &userID, &deviceID, &subject); err != nil {

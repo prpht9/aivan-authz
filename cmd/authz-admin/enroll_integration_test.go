@@ -4,15 +4,60 @@ package main_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/chris/aivan-authz/internal/gate"
 	"github.com/chris/aivan-authz/internal/proof"
 	"github.com/chris/aivan-authz/test/harness"
 )
+
+var (
+	buildOnce sync.Once
+	binPath   string
+	buildDir  string
+	buildErr  error
+)
+
+// TestMain removes the temporary build directory the binary lives in.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if buildDir != "" {
+		_ = os.RemoveAll(buildDir)
+	}
+	os.Exit(code)
+}
+
+// binary builds cmd/authz-admin once per test run. Every check here is about
+// the process an operator runs, so they run against the real binary.
+func binary(t *testing.T) string {
+	t.Helper()
+	buildOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "aivz-admin-")
+		if err != nil {
+			buildErr = err
+			return
+		}
+		buildDir = dir
+		out := filepath.Join(dir, "authz-admin")
+		cmd := exec.Command("go", "build", "-trimpath", "-o", out, ".")
+		cmd.Env = os.Environ()
+		if body, err := cmd.CombinedOutput(); err != nil {
+			buildErr = fmt.Errorf("build: %v: %s", err, body)
+			return
+		}
+		binPath = out
+	})
+	if buildErr != nil {
+		t.Fatalf("%v", buildErr)
+	}
+	return binPath
+}
 
 // enrollEnv is a complete environment for a console command against dsn.
 func enrollEnv(t *testing.T, dsn string) []string {
@@ -42,15 +87,8 @@ func runConsole(t *testing.T, env []string, args ...string) (int, string) {
 // seedOneUser writes the person the console commands act on.
 func seedOneUser(t *testing.T, dsn, username string) {
 	t.Helper()
-	harness.Exec(t, dsn, `
-		delete from authz.pending_enrollments;
-		delete from authz.sessions;
-		delete from authz.devices;
-		delete from public.groups_users;
-		delete from public.groups;
-		delete from public.users;
-		insert into public.users (id, email, username, active) values
-			(1, 'alice@example.invalid', '`+username+`', true);`)
+	harness.SeedUsers(t, dsn,
+		[]harness.User{{ID: 1, Username: username, Active: true}}, nil, nil)
 }
 
 // TestEnrollNewPrintsACodeOnce is F2 through the real binary: a code, a record,
@@ -59,7 +97,7 @@ func TestEnrollNewPrintsACodeOnce(t *testing.T) {
 	_, super := harness.Setup(t)
 	seedOneUser(t, super, "alice")
 
-	code, out := runConsole(t, enrollEnv(t, super),
+	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
 		"enroll-new", "--username", "alice", "--origin", "aivan-hud.home.arpa", "--kind", "browser")
 	if code != 0 {
 		t.Fatalf("exit = %d; output: %s", code, out)
@@ -89,7 +127,7 @@ func TestEnrollNewHasNoShowFlag(t *testing.T) {
 	_, super := harness.Setup(t)
 	seedOneUser(t, super, "alice")
 
-	code, out := runConsole(t, enrollEnv(t, super),
+	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
 		"enroll-new", "--username", "alice", "--origin", "aivan-hud.home.arpa", "--show")
 	if code == 0 {
 		t.Fatalf("--show was accepted; output: %s", out)
@@ -108,7 +146,7 @@ func TestEnrollNewRefusesAnUnknownUser(t *testing.T) {
 	_, super := harness.Setup(t)
 	seedOneUser(t, super, "alice")
 
-	code, out := runConsole(t, enrollEnv(t, super),
+	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
 		"enroll-new", "--username", "nobody", "--origin", "aivan-hud.home.arpa")
 	if code == 0 {
 		t.Fatalf("exit 0 for an unknown user; output: %s", out)
@@ -124,7 +162,7 @@ func TestEnrollNewRefusesAnOriginOutsideHosts(t *testing.T) {
 	_, super := harness.Setup(t)
 	seedOneUser(t, super, "alice")
 
-	code, out := runConsole(t, enrollEnv(t, super),
+	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
 		"enroll-new", "--username", "alice", "--origin", "aivan-typo.home.arpa")
 	if code == 0 {
 		t.Fatalf("exit 0 for an unknown origin; output: %s", out)

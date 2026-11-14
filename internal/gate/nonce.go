@@ -1,7 +1,6 @@
 package gate
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -9,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -23,9 +21,8 @@ import (
 // design would hand an attacker (spec §5.1.1).
 const NonceTableCap = 100_000
 
-// The purge schedule is PurgeInterval in purge.go: the nonce handler measures
-// the cap on the same pass that removes expired rows, so the two cannot
-// disagree about when maintenance last ran.
+// The nonce cap is measured on CapInterval in maintenance.go: the handler reads
+// the cached answer rather than counting per request.
 
 // nonceResponse is the whole body of a successful nonce issue.
 type nonceResponse struct {
@@ -132,59 +129,6 @@ func readNonceRequest(r *http.Request) ([16]byte, error) {
 		return out, proof.ErrMalformedID
 	}
 	return proof.ParseDeviceID(req.Device)
-}
-
-// maintainer holds the answer to "is the nonce table at its cap". The purge
-// itself lives in purge.go; this is the cached measurement the nonce handler
-// reads before an insert, so a full table costs no write and no count.
-type maintainer struct {
-	mu      sync.Mutex
-	lastRun time.Time
-	full    bool
-	now     func() time.Time
-}
-
-// maintain runs the scheduled purge if it is due and reports whether the table
-// is at the cap.
-//
-// The handler calls it before every insert so the cap holds even when no
-// ticker is running, which is how the tests build a gate. The ticker drives the
-// same function from RunMaintenance, and the two cannot disagree because the
-// schedule is the shared state.
-func (g *Gate) maintain(ctx context.Context) (bool, error) {
-	m := &g.maint
-
-	m.mu.Lock()
-	now := m.now()
-	if !m.lastRun.IsZero() && now.Sub(m.lastRun) < PurgeInterval {
-		full := m.full
-		m.mu.Unlock()
-		return full, nil
-	}
-	m.lastRun = now
-	m.mu.Unlock()
-
-	if _, err := g.Purge(ctx); err != nil {
-		return false, err
-	}
-	return g.refreshCap(ctx)
-}
-
-// refreshCap counts the nonce table and caches whether it is at the cap. The
-// count is deliberately separate from the purge: a purge that fails must still
-// leave the last measurement in place rather than report the table empty.
-func (g *Gate) refreshCap(ctx context.Context) (bool, error) {
-	var count int64
-	if err := g.pool.QueryRow(ctx, store.StmtCountID).Scan(&count); err != nil {
-		return false, err
-	}
-	full := count >= NonceTableCap
-
-	m := &g.maint
-	m.mu.Lock()
-	m.full = full
-	m.mu.Unlock()
-	return full, nil
 }
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }

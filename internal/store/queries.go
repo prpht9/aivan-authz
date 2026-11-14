@@ -5,14 +5,13 @@ package store
 const (
 	StmtVerify        = "aivan_verify"
 	StmtNonce         = "aivan_nonce_insert"
-	StmtPurge         = "aivan_nonce_purge"
-	StmtPurgeSessions = "aivan_session_purge"
 	StmtCountID       = "aivan_nonce_count"
 	StmtSessionMint   = "aivan_session_mint"
 	StmtSessionRead   = "aivan_session_read"
 	StmtSessionDelete = "aivan_session_delete"
-	StmtEnrollClaim   = "aivan_enroll_claim"
-	StmtEnrollDevice  = "aivan_enroll_device"
+	// StmtEnrollDevice is the call to authz.enroll_device(), the definer
+	// function that replaces the two statements this package used to run.
+	StmtEnrollDevice = "aivan_enroll_device"
 )
 
 // VerifySQL consumes a nonce and returns everything the gate needs to decide,
@@ -28,6 +27,10 @@ const (
 //
 // d.kind is selected because X-Aivan-Device-Kind is part of the output
 // contract; the plan's statement text omits it.
+//
+// The device row is read and never written here. The only write the gate may
+// make to authz.devices is the last_seen_at stamp in SessionMintSQL, which the
+// column grant allows.
 const VerifySQL = `
 with consumed as (
   delete from authz.nonces
@@ -59,28 +62,10 @@ insert into authz.nonces (nonce_hash, device_id, issued_at, expires_at)
 values ($1, $2, now(), now() + $3)
 returning expires_at`
 
-// PurgeSQL removes every nonce that has been expired for longer than the purge
-// grace. The grace is not about validity — the verify predicate already
-// refuses an expired nonce — it is about the race: a nonce row is deleted by a
-// request's own `delete ... returning`, and deleting it out from under that
-// statement would turn a valid in-flight request into a replay.
-//
-// One hour is far longer than any request can take (the gate answers within
-// five seconds), so nothing can still be racing a row this removes.
-const PurgeSQL = `delete from authz.nonces where expires_at < now() - interval '1 hour'`
-
-// PurgeSessionsSQL removes sessions that are idle-expired or past their
-// absolute cap. The idle rule gets the same grace as the nonce rule, for the
-// same race: the read statement slides idle_expires_at, and a row removed
-// between that read and its commit would refuse a request that had already
-// passed. An absolutely expired session is past any grace by construction, so
-// it is removed as soon as it is seen.
-const PurgeSessionsSQL = `
-delete from authz.sessions
- where idle_expires_at < now() - interval '1 hour'
-    or absolute_expires_at < now()`
-
-// NonceCountSQL counts the nonce table, for the table cap.
+// NonceCountSQL counts the nonce table, for the table cap. The count is the
+// only thing the gate does on a schedule now: the purge of expired rows is the
+// admin binary's job (doc/schema-handover.md §5), so the cap is measured here
+// and the rows are removed elsewhere.
 const NonceCountSQL = `select count(*) from authz.nonces`
 
 // SessionMintSQL inserts one session and stamps the device's last_seen_at in
@@ -91,6 +76,10 @@ const NonceCountSQL = `select count(*) from authz.nonces`
 // to another origin, or revoked between the proof check and this statement
 // produces no update, so the insert selects nothing and the statement returns
 // no row. That is a denial on the same path as a failed lookup.
+//
+// last_seen_at is the one column the gate may update on authz.devices, which
+// is why the stamp is here rather than a second statement: the column grant
+// bounds the write to this column alone.
 const SessionMintSQL = `
 with device as (
   update authz.devices
@@ -143,60 +132,46 @@ select d.id, d.revoked_at, d.user_id, d.kind,
 // idempotent: a token that matches no row deletes nothing and is not an error.
 const SessionDeleteSQL = `delete from authz.sessions where token_hash = $1`
 
-// EnrollClaimSQL consumes a pending enrollment and names the user it was
-// minted for. It is the whole authorization decision for a claim: the code
-// digest, the origin and "not yet claimed, not yet expired" are all predicates,
-// and the update returns a row only when every one held.
+// EnrollDeviceSQL completes an enrollment through the definer function. The
+// function consumes the pending record, inserts the device, and returns the
+// identity it created; the gate may not do any of those three things directly.
 //
-// The device id is passed in because the row records who claimed it, and the
-// device is inserted in the same transaction. A concurrent second claim updates
-// nothing — claimed_at is no longer null — so it returns no row and inserts no
-// device (S9, S10, S11).
+// Every predicate in the consume is part of the authorization: the digest, the
+// origin, "not yet claimed" and "not yet expired" are all inside the function,
+// and a call that matches none of them returns no row. The caller supplies the
+// device id it generated; user, origin and kind come from the record.
 //
-// user_id lives here and nowhere in the request. The claiming device never
-// asserts its identity; the record names it. The record id is returned so the
-// audit row can name the record the claim consumed.
-const EnrollClaimSQL = `
-update authz.pending_enrollments
-   set claimed_at = now(), claimed_device_id = $1
- where code_hash = $2
-   and origin    = $3
-   and claimed_at is null
-   and expires_at > now()
-returning id, user_id, origin, kind`
-
-// EnrollDeviceSQL inserts the device a claim produced. The origin, kind and
-// user come from the claimed record rather than from the request, so the device
-// cannot be created for a user or host the console did not name.
-//
-// The partial unique index on (user_id, origin, kind) refuses a second live
-// device of one kind. That is a console refusal at mint time, but a race
-// between two claims for two different records of the same kind could still
-// reach it; the caller maps the unique violation to a refusal.
+// It returns no audit row and needs no `returning` on the audit table: the gate
+// holds INSERT on authz.audit_log and no SELECT, so the evidence is written and
+// discarded. The record id is in the result so the audit row can name the
+// pending record the claim spent, without reading pending_enrollments back.
 const EnrollDeviceSQL = `
-insert into authz.devices (id, user_id, origin, name, kind, public_key, alg)
-values ($1, $2, $3, $4, $5, $6, $7)
-returning created_at`
+select user_id, kind, username, record_id
+  from authz.enroll_device($1, $2, $3, $4, $5)`
 
 // EnrollAuditSQL records a claim. The actor is the device it created; the
 // console's mint writes the operator's OS user in the same columns.
+//
+// No returning clause: the gate may not read authz.audit_log, so an insert that
+// tried to read back would be a grant error rather than a result.
 const EnrollAuditSQL = `
 insert into authz.audit_log (user_id, device_id, host, route, decision, reason, request_id, subject_id)
 values ($1, $2, $3, '/__aivan/enroll', 'enroll', 'claimed', $4, $5)`
 
 // GateStatements is the list NewConnection prepares. Ordering is irrelevant;
 // the names are the contract.
+//
+// The purge statements are gone: expired nonces and idle sessions are removed
+// by `authz-admin purge`, run as a CronJob, because removing them is
+// administration rather than serving.
 func GateStatements() []Statement {
 	return []Statement{
 		{Name: StmtVerify, SQL: VerifySQL},
 		{Name: StmtNonce, SQL: NonceSQL},
-		{Name: StmtPurge, SQL: PurgeSQL},
-		{Name: StmtPurgeSessions, SQL: PurgeSessionsSQL},
 		{Name: StmtCountID, SQL: NonceCountSQL},
 		{Name: StmtSessionMint, SQL: SessionMintSQL},
 		{Name: StmtSessionRead, SQL: SessionReadSQL},
 		{Name: StmtSessionDelete, SQL: SessionDeleteSQL},
-		{Name: StmtEnrollClaim, SQL: EnrollClaimSQL},
 		{Name: StmtEnrollDevice, SQL: EnrollDeviceSQL},
 	}
 }

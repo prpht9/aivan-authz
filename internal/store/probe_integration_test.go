@@ -13,7 +13,7 @@ import (
 )
 
 // TestPrivilegeProbeAcceptsServiceRole proves the probe passes under the role
-// 0002_grants.sql produces. Without this, a probe that always refuses would
+// aivan-hud/doc/schema-ownership.md produces. Without this, a probe that always refuses would
 // look like a passing security test.
 func TestPrivilegeProbeAcceptsServiceRole(t *testing.T) {
 	service, _ := harness.Setup(t)
@@ -53,7 +53,7 @@ func TestPrivilegeProbeRefusesSuperuser(t *testing.T) {
 	for _, want := range []string{
 		"refusing to start",
 		"can create objects in schema public",
-		"only the grants in 0002_grants.sql",
+		"only the grants in aivan-hud/doc/schema-ownership.md",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("message %q missing %q", err.Error(), want)
@@ -130,16 +130,17 @@ func TestPrivilegeProbeRefusesWritableUsers(t *testing.T) {
 	}
 }
 
-// TestPrivilegeProbeReportsWrongEnvironment proves the probe distinguishes
-// "denied" from "the schema is not what the design expects". A missing column
-// is a refusal with a different message, not a silent pass.
-func TestPrivilegeProbeReportsWrongEnvironment(t *testing.T) {
+// TestPrivilegeProbeReportsUnmigratedDatabase proves the probe distinguishes
+// "the schema is missing" from "the grants are wrong". An unmigrated database is
+// a deployment mistake, and the message says which deployment step is missing
+// rather than naming a grant the operator would go looking for.
+func TestPrivilegeProbeReportsUnmigratedDatabase(t *testing.T) {
 	ctx := context.Background()
 	dsn := harness.CreateDatabase(t)
 	harness.Exec(t, dsn, `
 		create table public.users (id bigint primary key, username text, active boolean);
 	`)
-	const role = "probe_no_digest_column"
+	const role = "probe_unmigrated"
 	harness.CreateRole(t, dsn, role, "")
 	harness.Exec(t, dsn, `
 		grant usage on schema public to `+role+`;
@@ -155,13 +156,114 @@ func TestPrivilegeProbeReportsWrongEnvironment(t *testing.T) {
 
 	err = store.PrivilegeProbe(ctx, db.Pool)
 	if err == nil {
-		t.Fatal("probe accepted a schema without password_digest")
+		t.Fatal("probe accepted a database with no authz schema")
 	}
-	if !strings.Contains(err.Error(), "SQLSTATE 42501") {
-		t.Fatalf("error %q does not explain the expected SQLSTATE", err)
+	for _, want := range []string{
+		"could not measure privileges on schema authz",
+		"rake db:migrate",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err.Error(), want)
+		}
 	}
-	if !strings.Contains(err.Error(), "does not match the design") {
-		t.Fatalf("error %q does not say the environment is wrong", err)
+}
+
+// TestPrivilegeProbeNamesAMissingGrant: a credential that holds the schema but
+// not the grants is refused with the grant named, so an operator can fix the
+// matrix without reading the design documents first.
+func TestPrivilegeProbeNamesAMissingGrant(t *testing.T) {
+	ctx := context.Background()
+	_, super := harness.Setup(t)
+
+	const role = "probe_missing_grant"
+	harness.CreateRole(t, super, role, "")
+	harness.Exec(t, super, `
+		grant usage on schema authz to `+role+`;
+		grant usage on schema public to `+role+`;
+		grant select (id, username, active) on public.users to `+role+`;
+		revoke create on schema public from `+role+`;
+	`)
+
+	db, err := store.Open(ctx, harness.AsRole(t, super, role))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	err = store.PrivilegeProbe(ctx, db.Pool)
+	if err == nil {
+		t.Fatal("probe accepted a credential with no grants")
+	}
+	for _, want := range []string{"refusing to start", "authz.devices", "schema-ownership.md"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err.Error(), want)
+		}
+	}
+}
+
+// TestPrivilegeProbeRefusesWritableDevices is the absence assertion the handover
+// turns on: a gate that can write a device can create a credential, which is a
+// different authority from spending one.
+func TestPrivilegeProbeRefusesWritableDevices(t *testing.T) {
+	_, super := harness.Setup(t)
+	ctx := context.Background()
+
+	const role = "probe_device_writer"
+	harness.CreateRole(t, super, role, "")
+	harness.Exec(t, super, `
+		grant usage on schema authz to `+role+`;
+		grant select, insert, update, delete on all tables in schema authz to `+role+`;
+		grant usage on sequence authz.audit_log_id_seq to `+role+`;
+		grant usage on schema public to `+role+`;
+		grant select (id, username, active) on public.users to `+role+`;
+		grant select (id, name) on public.groups to `+role+`;
+		grant select on public.groups_users to `+role+`;
+		revoke create on schema public from `+role+`;
+	`)
+
+	db, err := store.Open(ctx, harness.AsRole(t, super, role))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	err = store.PrivilegeProbe(ctx, db.Pool)
+	if err == nil {
+		t.Fatal("probe accepted a credential that can insert into authz.devices")
+	}
+	if !strings.Contains(err.Error(), "insert into authz.devices") {
+		t.Fatalf("error %q does not name the device insert", err)
+	}
+}
+
+// TestPrivilegeProbeRefusesAuditRead: the evidence is append-only and unreadable
+// to the observed. A credential that can read it back is a refusal.
+func TestPrivilegeProbeRefusesAuditRead(t *testing.T) {
+	_, super := harness.Setup(t)
+	ctx := context.Background()
+
+	const role = "probe_audit_reader"
+	harness.CreateRole(t, super, role, "")
+	harness.Exec(t, super, `
+		grant usage on schema authz to `+role+`;
+		grant select on authz.audit_log to `+role+`;
+		grant usage on schema public to `+role+`;
+		grant select (id, username, active) on public.users to `+role+`;
+		revoke create on schema public from `+role+`;
+	`)
+
+	db, err := store.Open(ctx, harness.AsRole(t, super, role))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	err = store.PrivilegeProbe(ctx, db.Pool)
+	if err == nil {
+		t.Fatal("probe accepted a credential that can read authz.audit_log")
+	}
+	if !strings.Contains(err.Error(), "authz.audit_log") {
+		t.Fatalf("error %q does not name the audit log", err)
 	}
 }
 

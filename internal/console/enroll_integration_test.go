@@ -42,7 +42,7 @@ func TestEnrollMintsTheFirstCode(t *testing.T) {
 	f := setup(t)
 	clearDevices(t, f)
 
-	res, err := console.Enroll(context.Background(), f.pool, console.EnrollOptions{
+	res, err := console.Enroll(context.Background(), f.op, console.EnrollOptions{
 		Username: "alice",
 		Origin:   "aivan-hud.home.arpa",
 		Kind:     "browser",
@@ -71,7 +71,7 @@ func TestEnrollMintsTheFirstCode(t *testing.T) {
 		kind   string
 		origin string
 	)
-	if err := f.pool.QueryRow(context.Background(), `
+	if err := f.op.QueryRow(context.Background(), `
 select code_hash, kind, origin from authz.pending_enrollments where id = $1`,
 		res.RecordID).Scan(&stored, &kind, &origin); err != nil {
 		t.Fatalf("read record: %v", err)
@@ -94,7 +94,7 @@ select code_hash, kind, origin from authz.pending_enrollments where id = $1`,
 func TestEnrollWritesAnAuditRow(t *testing.T) {
 	f := setup(t)
 	clearDevices(t, f)
-	res, err := console.Enroll(context.Background(), f.pool, console.EnrollOptions{
+	res, err := console.Enroll(context.Background(), f.op, console.EnrollOptions{
 		Username: "alice", Origin: "aivan-hud.home.arpa",
 	}, hudHosts, "some-operator")
 	if err != nil {
@@ -104,7 +104,7 @@ func TestEnrollWritesAnAuditRow(t *testing.T) {
 	var (
 		decision, reason, actor, subject string
 	)
-	if err := f.pool.QueryRow(context.Background(), `
+	if err := f.op.QueryRow(context.Background(), `
 select decision, reason, actor, subject_id::text
   from authz.audit_log where route = 'console' order by id desc limit 1`,
 	).Scan(&decision, &reason, &actor, &subject); err != nil {
@@ -125,7 +125,7 @@ select decision, reason, actor, subject_id::text
 // record attached to nobody.
 func TestEnrollRefusesAnUnknownUser(t *testing.T) {
 	f := setup(t)
-	_, err := console.Enroll(context.Background(), f.pool, console.EnrollOptions{
+	_, err := console.Enroll(context.Background(), f.op, console.EnrollOptions{
 		Username: "nobody", Origin: "aivan-hud.home.arpa",
 	}, hudHosts, "operator")
 	if err == nil || !strings.Contains(err.Error(), "no active user") {
@@ -137,7 +137,7 @@ func TestEnrollRefusesAnUnknownUser(t *testing.T) {
 // record cannot be minted for a host no gate serves.
 func TestEnrollRefusesAnOriginOutsideHosts(t *testing.T) {
 	f := setup(t)
-	_, err := console.Enroll(context.Background(), f.pool, console.EnrollOptions{
+	_, err := console.Enroll(context.Background(), f.op, console.EnrollOptions{
 		Username: "alice", Origin: "aivan-typo.home.arpa",
 	}, hudHosts, "operator")
 	if err == nil || !strings.Contains(err.Error(), "is not in AIVAN_HOSTS") {
@@ -149,13 +149,13 @@ func TestEnrollRefusesAnOriginOutsideHosts(t *testing.T) {
 // which is the partial unique index's rule surfaced as an operator message.
 func TestEnrollRefusesALiveDevice(t *testing.T) {
 	f := setup(t)
-	_, err := console.Enroll(context.Background(), f.pool, console.EnrollOptions{
+	_, err := console.Enroll(context.Background(), f.op, console.EnrollOptions{
 		Username: "alice", Origin: "aivan-hud.home.arpa", Kind: "browser",
 	}, hudHosts, "operator")
 	if err == nil {
 		t.Fatal("Enroll minted a code for a person who already has a browser device")
 	}
-	for _, want := range []string{"already has a live browser device", "authz revoke --device"} {
+	for _, want := range []string{"already has a live browser device", "authz-admin revoke --device"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}
@@ -169,11 +169,11 @@ func TestEnrollRefusesASecondLiveCode(t *testing.T) {
 	clearDevices(t, f)
 	opts := console.EnrollOptions{Username: "alice", Origin: "aivan-hud.home.arpa", Kind: "browser"}
 
-	first, err := console.Enroll(context.Background(), f.pool, opts, hudHosts, "operator")
+	first, err := console.Enroll(context.Background(), f.op, opts, hudHosts, "operator")
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	_, err = console.Enroll(context.Background(), f.pool, opts, hudHosts, "operator")
+	_, err = console.Enroll(context.Background(), f.op, opts, hudHosts, "operator")
 	if err == nil {
 		t.Fatal("a second live code was minted")
 	}
@@ -197,13 +197,13 @@ func TestEnrollReplacesAnExpiredRecord(t *testing.T) {
 	clearDevices(t, f)
 	opts := console.EnrollOptions{Username: "alice", Origin: "aivan-hud.home.arpa", Kind: "browser"}
 
-	first, err := console.Enroll(context.Background(), f.pool, opts, hudHosts, "operator")
+	first, err := console.Enroll(context.Background(), f.op, opts, hudHosts, "operator")
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	harnessAge(t, f, first.RecordID)
 
-	second, err := console.Enroll(context.Background(), f.pool, opts, hudHosts, "operator")
+	second, err := console.Enroll(context.Background(), f.op, opts, hudHosts, "operator")
 	if err != nil {
 		t.Fatalf("mint after expiry: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestEnrollReplacesAnExpiredRecord(t *testing.T) {
 
 	// The expired row is gone and exactly one live record remains.
 	var rows, live int
-	if err := f.pool.QueryRow(context.Background(), `
+	if err := f.op.QueryRow(context.Background(), `
 select count(*), count(*) filter (where claimed_at is null and expires_at > now())
   from authz.pending_enrollments where user_id = 1`).Scan(&rows, &live); err != nil {
 		t.Fatalf("count: %v", err)
@@ -230,7 +230,7 @@ func TestEnrollRefusesAKindWithNoClaimEndpoint(t *testing.T) {
 	f := setup(t)
 	clearDevices(t, f)
 	for _, kind := range []string{"phone", "tablet"} {
-		_, err := console.Enroll(context.Background(), f.pool, console.EnrollOptions{
+		_, err := console.Enroll(context.Background(), f.op, console.EnrollOptions{
 			Username: "alice", Origin: "aivan-hud.home.arpa", Kind: kind,
 		}, hudHosts, "operator")
 		if err == nil {
@@ -247,7 +247,7 @@ func TestEnrollRefusesAKindWithNoClaimEndpoint(t *testing.T) {
 func TestWriteEnrollPrintsTheCodeOnce(t *testing.T) {
 	f := setup(t)
 	clearDevices(t, f)
-	res, err := console.Enroll(context.Background(), f.pool, console.EnrollOptions{
+	res, err := console.Enroll(context.Background(), f.op, console.EnrollOptions{
 		Username: "alice", Origin: "aivan-hud.home.arpa",
 	}, hudHosts, "operator")
 	if err != nil {

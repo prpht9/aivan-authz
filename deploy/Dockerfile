@@ -1,5 +1,12 @@
 # The gate's image: a static binary on distroless.
 #
+# One binary, and it serves only. The operator commands (enroll-new, revoke,
+# list-devices, purge, service) are in cmd/authz-admin, which is built on a
+# workstation and never copied here. That is the control in
+# doc/schema-handover.md §4: a process compromised in the pod can only run what
+# is compiled into this image, and TestGateBinaryHasNoAdminCommands asserts the
+# names are absent.
+#
 # Both base images are pinned by index digest, not just by tag, so a rebuild of
 # a moved tag cannot change what this service runs. The digest is the
 # multi-platform index; the build platform picks its own manifest from it, and
@@ -22,10 +29,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/authz ./cmd/authz
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/authz-gate ./cmd/authz-gate
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
-COPY --from=build /out/authz /authz
+COPY --from=build /out/authz-gate /authz
 # Nonroot by uid and group, not by name: a digest-pinned image keeps its
 # /etc/passwd, but the numeric form is what the pod spec also asserts, and the
 # two should say the same thing.

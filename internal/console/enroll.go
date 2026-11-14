@@ -27,7 +27,7 @@ const EnrollTTL = 15 * time.Minute
 // claim them.
 const KindBrowser = "browser"
 
-// EnrollOptions is one `authz enroll-new` invocation.
+// EnrollOptions is one `authz-admin enroll-new` invocation.
 type EnrollOptions struct {
 	Username string
 	Origin   string
@@ -125,7 +125,7 @@ select id::text from authz.devices
 		out.UserID, o.Origin, o.Kind).Scan(&existingDevice)
 	if err == nil {
 		return out, fmt.Errorf("user %q already has a live %s device on %s (%s); "+
-			"end it with `authz revoke --device %s` before minting another",
+			"end it with `authz-admin revoke --device %s` before minting another",
 			out.Username, o.Kind, o.Origin, existingDevice, existingDevice)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {

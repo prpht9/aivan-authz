@@ -12,8 +12,20 @@ export HUD_HOST=aivan-hud.home.arpa   # the gated host
 ```
 
 Every `kubectl` command below names its namespace explicitly. Nothing here
-requires cluster-admin; the role that runs `authz` needs only the grants in
-`deploy/roles.sql`.
+requires cluster-admin.
+
+Amended 2026-11-14 for `doc/schema-handover.md`. Two things changed for an
+operator:
+
+- **The schema is aivan-hud's.** `rake db:migrate` in that project applies it,
+  as its migration role. There is no `authz migrate`.
+- **The operator commands are `authz-admin`,** a binary built on a workstation
+  and never put in an image. `enroll-new`, `revoke`, `list-devices`, `purge` and
+  the `service` commands all live there. The gate's image contains only `serve`.
+
+The commands below are written against `authz-admin/`. Nothing about the gate's
+runtime changed: the probes, the reason codes, the `413` boundary and the
+latency numbers are as they were.
 
 ---
 
@@ -39,17 +51,32 @@ $ kubectl -n aivan-core exec aivan-core-1 -- psql -U postgres -d aivan_core \
  10 | chris    | t
 ```
 
-### 1b. The first enrollment code
+### 1b. The schema, then the first enrollment code
 
-`admin:create` is the application's own first-admin step. Once that person
-exists, the gate mints their first device:
+The schema is aivan-hud's, so it is applied from that project, as the migration
+role, before anything on this side can start:
 
 ```console
-$ kubectl -n aivan-core port-forward svc/aivan-core-rw 5544:5432 &
-$ export AIVAN_DB_URL='postgres://aivan_migrations:<pw>@127.0.0.1:5544/aivan_core?sslmode=disable'
-$ export AIVAN_HOSTS=aivan-hud.home.arpa
-$ ./authz enroll-new --username chris --origin aivan-hud.home.arpa --kind browser
+$ kubectl -n aivan-core port-forward svc/aivan-core-rw 15432:5432 &
+$ cd /path/to/aivan-hud
+$ DATABASE_URL='postgres://aivan_migrations:<pw>@127.0.0.1:15432/aivan_core?sslmode=disable' \
+    bundle exec rake db:migrate
+$ bundle exec rake db:check_grants     # asserts the matrix and the denials
 ```
+
+`admin:create` is the application's own first-admin step. Once that person
+exists, their first device is minted from the operator binary, on the
+workstation, against the same port-forward:
+
+```console
+$ export AIVAN_DB_URL='postgres://aivan_migrations:<pw>@127.0.0.1:15432/aivan_core?sslmode=disable'
+$ export AIVAN_HOSTS=aivan-hud.home.arpa
+$ ./authz-admin enroll-new --username chris --origin aivan-hud.home.arpa --kind browser
+```
+
+There is no `kubectl exec` path that mints: the gate's image does not contain
+the command. That is deliberate — a process compromised in the pod cannot create
+a credential.
 
 Output:
 
@@ -69,7 +96,7 @@ The code is 26 Crockford characters with a dash every four.
 Two facts an operator must know:
 
 - The command needs the database credential and therefore a port-forward. It is
-  a subcommand of the binary, not a route, which is what keeps it
+  a subcommand of a binary that is not in any image, which is what keeps it
   operator-only.
 - **The code is printed once.** Only its digest is stored. There is no
   `--show` and no way to recover it; a lost code means minting another.
@@ -95,10 +122,10 @@ exported), signs the claim, and receives a session cookie.
 What the operator sees when the person already has a live device of that kind:
 
 ```console
-$ ./authz enroll-new --username chris --origin aivan-hud.home.arpa --kind browser
+$ ./authz-admin enroll-new --username chris --origin aivan-hud.home.arpa --kind browser
 enroll-new: user "chris" already has a live browser device on aivan-hud.home.arpa
 (62aa0ecf-c79c-3792-fec6-5dd72c70a5ec); end it with
-`authz revoke --device 62aa0ecf-c79c-3792-fec6-5dd72c70a5ec` before minting another
+`authz-admin revoke --device 62aa0ecf-c79c-3792-fec6-5dd72c70a5ec` before minting another
 ```
 
 That is deliberate: one live device per person, per host, per kind. A second
@@ -112,10 +139,17 @@ body, so the person retries rather than learning which it was.
 
 ## 3. Revoke a device
 
+Revocation is a hud action: `/admin`, or a person revoking their own phone. The
+command below is the break-glass path for when hud is down.
+
 ```console
-$ ./authz revoke --device 62aa0ecf-c79c-3792-fec6-5dd72c70a5ec
+$ ./authz-admin revoke --device 62aa0ecf-c79c-3792-fec6-5dd72c70a5ec
 revoked 62aa0ecf-c79c-3792-fec6-5dd72c70a5ec for user 10; 3 session(s) deleted
 ```
+
+The gate cannot revoke. Its credential holds no `EXECUTE` on
+`authz.revoke_device()`, so a compromised gate cannot cut off every device in the
+household — which would be a denial of service on the whole system.
 
 Open tabs stop working on their next request. Observed: with a cookie session
 under continuous load, 330 requests were allowed and then every request from the
@@ -136,9 +170,9 @@ the person; do not look for a way to restore it.
 
 The procedure is:
 
-1. `./authz list-devices --username <name>` to find the device id.
-2. `./authz revoke --device <id>`.
-3. `./authz enroll-new --username <name> --origin <host> --kind <kind>` and hand
+1. `./authz-admin list-devices --username <name>` to find the device id.
+2. `./authz-admin revoke --device <id>`.
+3. `./authz-admin enroll-new --username <name> --origin <host> --kind <kind>` and hand
    them the new code.
 
 The old device is now refused everywhere; the new one starts with no sessions.
@@ -149,21 +183,20 @@ is the whole procedure.
 
 ## 5. Rotate the database credential
 
-The gate's credential is `aivan_authz`, created by `deploy/roles.sql` and granted
-by `0002_grants.sql`. Rotating it is three steps and one restart.
+The gate's credential is `aivan_authz`, created by `deploy/roles.sql`. The authz
+grants are described by aivan-hud's grant migration
+(`db/migration/202611140500_authz_grants.rb` and the migration that follows it).
+Rotating it is three steps and one restart.
 
 ```console
-# 1. A new password, and a new role with the same grants. The grants are in
-#    0002_grants.sql; a role that lacks them is refused at boot (see below).
+# 1. A new password for the existing role. The grants follow the role name, so
+#    there is nothing to re-grant.
 $ kubectl -n aivan-core exec aivan-core-1 -- psql -U postgres -d aivan_core -c \
-    "create role aivan_authz_v2 login nosuperuser nocreatedb nocreaterole password '<new-pw>'"
-$ kubectl -n aivan-core exec aivan-core-1 -- psql -U postgres -d aivan_core -f - < deploy/roles.sql
-# (edit roles.sql first: the new name, and the CREATE ROLE lines commented out
-#  on a second run, because PostgreSQL has no CREATE ROLE IF NOT EXISTS)
+    "alter role aivan_authz password '<new-pw>'"
 
 # 2. The secret.
 $ kubectl -n "$AIVAN_NS" create secret generic aivan-authz-db \
-    --from-literal AIVAN_DB_URL='postgres://aivan_authz_v2:<new-pw>@aivan-core-rw.aivan-core.svc.cluster.local:5432/aivan_core?sslmode=require' \
+    --from-literal AIVAN_DB_URL='postgres://aivan_authz:<new-pw>@aivan-core-rw.aivan-core.svc.cluster.local:5432/aivan_core?sslmode=require' \
     --dry-run=client -o yaml | kubectl apply -f -
 
 # 3. Restart, which is what makes the pod read the new secret.
@@ -171,27 +204,44 @@ $ kubectl -n "$AIVAN_NS" rollout restart deploy/aivan-authz
 $ kubectl -n "$AIVAN_NS" rollout status deploy/aivan-authz
 ```
 
+To move to a differently *named* role, run `deploy/roles.sql` with the new name
+and then re-run hud's `rake db:migrate` as the migration role: the grant
+migration re-describes the whole matrix on every run, which is what makes it the
+repair path for a new grantee as well as for a drifted grant.
+
 The pod reads the secret at start, not per request, so the restart is required.
 
 ### Recognising a privilege refusal as configuration
 
-If the new role holds more than `0002_grants.sql` intends, the gate refuses to
-start and the pod enters `CrashLoopBackOff`. That is the design, not a bug:
+The gate probes its credential before it opens the listener. A role that holds
+more than the matrix allows is a refusal, and the pod enters
+`CrashLoopBackOff`. That is the design, not a bug:
 
 ```console
 $ kubectl -n "$AIVAN_NS" logs deploy/aivan-authz --previous
 refusing to start: database role can create objects in schema public.
-The service must run as a role with only the grants in 0002_grants.sql.
+The service must run as aivan_authz with only the grants in
+aivan-hud/doc/schema-ownership.md §4 (rake db:check_grants verifies them).
 ```
 
 ```text
-refusing to start: database role can read public.users.password_digest.
-The service must run as a role with only the grants in 0002_grants.sql.
+refusing to start: database role can read authz.audit_log.
+The service must run as aivan_authz with only the grants in
+aivan-hud/doc/schema-ownership.md §4 (rake db:check_grants verifies them).
 ```
 
-The fix is to run the grants, not to change the gate. `revoke create on schema
-public from <role>` is the first line of that fix; the column grants are the
-second.
+```text
+refusing to start: database role can insert into authz.devices.
+The service must run as aivan_authz with only the grants in
+aivan-hud/doc/schema-ownership.md §4 (rake db:check_grants verifies them).
+```
+
+The message names the offending privilege, so the fix is a `revoke`, not a change
+to the gate. `rake db:check_grants` in aivan-hud lists every line of the matrix
+and is the reliable way to find what drifted.
+
+A refusal that names `rake db:migrate` instead is a different problem: the schema
+is missing, so the migrations have not run against this database.
 
 ---
 
@@ -251,7 +301,13 @@ attribute whose name is one of those, so the guarantee does not depend on a
 review.
 
 `authz.audit_log` holds the security-relevant events only: enrollments,
-revokes, and the console's own actions.
+revokes, and the operator commands' own actions.
+
+**The gate cannot read this table.** It holds `INSERT` and no `SELECT`, so the
+evidence is append-only to the process that writes it: a compromised gate cannot
+scrub the record of its own decisions. The queries below are for a person with
+the application credential or `kubectl exec`, and they are the only way to read
+it.
 
 ```console
 $ kubectl -n aivan-core exec aivan-core-1 -- psql -U postgres -d aivan_core
@@ -382,7 +438,7 @@ seconds, which is too short a window to observe. It is the same failure from the
 gate's side: the database accepts a connection and never answers.
 
 **Revoke during traffic.** With a cookie session under continuous load,
-`authz revoke --device <id>` stops the session on its next request, with no
+`authz-admin revoke --device <id>` stops the session on its next request, with no
 `500`s. Observed: 330 allowed, then every request `401` with
 `reason: device_revoked`.
 

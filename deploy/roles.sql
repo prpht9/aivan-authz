@@ -1,18 +1,26 @@
 -- Roles and grants for aivan-authz.
 --
 -- Run once, as a superuser or the database owner, against the application's
--- database. It is not a migration: the gate's own migrations run afterwards as
--- aivan_migrations, and this file is what makes that possible.
+-- database. It is not a migration: schemas public and authz belong to
+-- aivan-hud's migration history now (doc/schema-handover.md §2), so
+-- `rake db:migrate` in that project runs afterwards and describes the authz
+-- grant matrix itself.
 --
--- Two roles, because one is not enough:
+-- This file does the half a migration cannot: role creation, and the grants on
+-- schema public, which belongs to the application rather than to the migration
+-- role.
 --
---   aivan_authz       the runtime credential. No CREATE, no password_digest,
---                     no write outside schema authz. The gate refuses to start
---                     if this role holds more than 0002_grants.sql intends.
---   aivan_migrations  owns schema authz and applies the gate's migrations. It
---                     is never put in a pod: the image is distroless, and
---                     `authz migrate` runs from a workstation with a
---                     port-forward.
+-- Two roles:
+--
+--   aivan_authz       the gate's runtime credential. It reads identity, appends
+--                     evidence, drives its own nonces and sessions, and
+--                     completes an enrollment through a definer function. It
+--                     cannot create or destroy a credential, read the audit
+--                     log, or approve anything.
+--   aivan_migrations  owns schemas public and authz and applies both projects'
+--                     migrations. It is never put in a pod: the gate's image is
+--                     distroless and the operator binary runs from a
+--                     workstation.
 --
 -- Passwords are not in this file. Set them here before applying, or run the
 -- statements by hand with a generated value:
@@ -43,50 +51,52 @@ grant  create on schema public to aivan_migrations;
 -- this install's owner; change the name if yours differs.
 grant  create on schema public to aivan_core;
 
--- 3. The gate's schema.
+-- 3. What the migration role needs in order to create schema authz.
 --
--- The runtime role may use it and nothing more; ownership stays with the
--- migration role, so a bug in the gate cannot alter its own schema.
-create schema if not exists authz;
-alter schema authz owner to aivan_migrations;
-grant usage on schema authz to aivan_authz;
+-- The schema itself is created by aivan-hud's 202611140100_authz_schema.rb, and
+-- that migration hands ownership to aivan_migrations. This is only what makes
+-- the handover possible.
+grant create on database aivan_core to aivan_migrations;
 
 -- 4. What the migrations need to reference and to re-grant.
 --
--- 0001_init.sql puts a foreign key on public.users, so the migration role
--- needs REFERENCES. 0002_grants.sql grants column-level SELECT to aivan_authz,
--- which the migration role can only do if it holds those columns with the
--- grant option. It holds no row-level read of its own beyond that.
+-- authz.devices, authz.pending_enrollments and authz.approvals put foreign keys
+-- on public.users, so the migration role needs REFERENCES. The grant migration
+-- grants column-level SELECT to aivan_authz, which the migration role can only
+-- do if it holds those columns with the grant option. The definer functions
+-- read public.users.username from inside a SECURITY DEFINER body, so the role
+-- that owns them has to be able to read that column.
 grant usage on schema public to aivan_migrations;
 grant references on public.users to aivan_migrations;
 grant select (id, username, active) on public.users  to aivan_migrations with grant option;
 grant select (id, name)             on public.groups to aivan_migrations with grant option;
 grant select                        on public.groups_users to aivan_migrations with grant option;
 
--- 5. Verify. Every line must read as the comment says.
+-- 5. What the gate reads on the public side. It never sees password_digest.
+grant usage on schema public to aivan_authz;
+grant select (id, username, active) on public.users  to aivan_authz;
+grant select (id, name)             on public.groups to aivan_authz;
+grant select                        on public.groups_users to aivan_authz;
+revoke create on schema public from aivan_authz;
+
+-- 6. Verify. Every line must read as the comment says.
 select 'authz cannot CREATE on public'   as check, not has_schema_privilege('aivan_authz','public','CREATE') as ok
 union all select 'authz cannot read password_digest', not has_column_privilege('aivan_authz','public.users','password_digest','SELECT')
 union all select 'authz can read users.id',            has_column_privilege('aivan_authz','public.users','id','SELECT')
 union all select 'authz cannot insert users',         not has_table_privilege('aivan_authz','public.users','INSERT')
-union all select 'migrations own schema authz',       ((select nspowner::regrole::text from pg_namespace where nspname='authz')='aivan_migrations')
 union all select 'migrations can CREATE on public',    has_schema_privilege('aivan_migrations','public','CREATE')
 union all select 'migrations can reference users',     has_table_privilege('aivan_migrations','public.users','REFERENCES');
 
--- On an existing database the schema and its objects were created by whoever
--- ran the first migration. Hand them to the migration role before step 3:
+-- After `rake db:migrate` in aivan-hud, these must also read as the comment
+-- says. They are checked by aivan-hud's script/check_authz_grants.rb
+-- (`rake db:check_grants`), which asserts the whole matrix by name — presence
+-- and absence — and probes the denials by switching into each role:
 --
---   alter schema authz owner to aivan_migrations;
---   alter table authz.schema_migrations    owner to aivan_migrations;
---   alter table authz.devices              owner to aivan_migrations;
---   alter table authz.nonces               owner to aivan_migrations;
---   alter table authz.sessions             owner to aivan_migrations;
---   alter table authz.pending_enrollments  owner to aivan_migrations;
---   alter table authz.audit_log            owner to aivan_migrations;
---   alter sequence authz.audit_log_id_seq  owner to aivan_migrations;
---
--- and grant the database-level CREATE the migration needs to make objects:
---
---   grant create on database aivan_core to aivan_migrations;
+--   migrations own schema authz
+--   authz cannot insert, update or delete on authz.devices
+--   authz cannot read authz.audit_log
+--   authz cannot execute authz.revoke_device
+--   authz can execute authz.enroll_device
 --
 -- Two more facts this file cannot express, because they belong to the roles'
 -- own setup:

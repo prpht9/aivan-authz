@@ -139,16 +139,10 @@ func startServe(t *testing.T, env []string) *running {
 // device to sign with.
 func serveEnvForUser(t *testing.T, service, super, listen string) []string {
 	t.Helper()
-	harness.Exec(t, super, `
-		delete from authz.sessions;
-		delete from authz.devices;
-		delete from public.groups_users;
-		delete from public.groups;
-		delete from public.users;
-		insert into public.users (id, email, username, active) values
-			(1, 'alice@example.invalid', 'alice', true);
-		insert into public.groups (id, name) values (10, 'admin');
-		insert into public.groups_users (group_id, user_id) values (10, 1);`)
+	harness.SeedUsers(t, super,
+		[]harness.User{{ID: 1, Username: "alice", Active: true}},
+		map[int64]string{10: "admin"},
+		map[int64][]int64{10: {1}})
 	return serveEnv(t, service, listen)
 }
 
@@ -237,10 +231,14 @@ func verify(t *testing.T, base, method, target, body string, headers map[string]
 	return resp, string(raw)
 }
 
-// TestServePurgesAtStartup is G1's "first run at startup" through the real
-// binary: an expired row present before the process starts is gone by the time
-// /healthz answers.
-func TestServePurgesAtStartup(t *testing.T) {
+// TestServeStartsWithoutPurging is the handover's deployment claim in §7: the
+// gate starts, probes, and serves. It does not migrate and it does not purge, so
+// expired scratch rows are still there after startup and the admin binary's
+// CronJob is what removes them.
+//
+// The test would also catch a regression where the purge came back: a gate that
+// deleted these rows would fail here.
+func TestServeStartsWithoutPurging(t *testing.T) {
 	service, super := harness.Setup(t)
 	env := serveEnvForUser(t, service, super, "127.0.0.1:0")
 	d := seedDevice(t, super)
@@ -256,8 +254,6 @@ func TestServePurgesAtStartup(t *testing.T) {
 		t.Fatalf("healthz = %d", code)
 	}
 
-	// The pass is synchronous before the listener opens, so there is no race
-	// to wait out.
 	var nonces, sessions int
 	conn := openConn(t, super)
 	defer func() { _ = conn.Close(context.Background()) }()
@@ -269,16 +265,19 @@ func TestServePurgesAtStartup(t *testing.T) {
 		`select count(*) from authz.sessions where token_hash = decode(repeat('cd',32),'hex')`).Scan(&sessions); err != nil {
 		t.Fatalf("count sessions: %v", err)
 	}
-	if nonces != 0 {
-		t.Errorf("expired nonce rows after startup = %d, want 0", nonces)
+	if nonces != 1 {
+		t.Errorf("expired nonce rows after startup = %d, want the row left for the CronJob", nonces)
 	}
-	if sessions != 0 {
-		t.Errorf("expired session rows after startup = %d, want 0", sessions)
+	if sessions != 1 {
+		t.Errorf("expired session rows after startup = %d, want the row left for the CronJob", sessions)
 	}
 
-	// The startup pass says so in the log, at debug by default.
 	if !strings.Contains(proc.logs.String(), `"msg":"listening"`) {
 		t.Fatalf("no startup line:\n%s", proc.logs.String())
+	}
+	// The gate no longer has a purge to report.
+	if strings.Contains(proc.logs.String(), `"purge"`) || strings.Contains(proc.logs.String(), `"purge_interval"`) {
+		t.Errorf("the gate logged a purge:\n%s", proc.logs.String())
 	}
 }
 

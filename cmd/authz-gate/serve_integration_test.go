@@ -39,9 +39,9 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// binary builds cmd/authz once per test run. The checklist items are about the
-// process's exit behaviour, so they are checked against the real binary rather
-// than against a package function.
+// binary builds cmd/authz-gate once per test run. The checklist items are about
+// the process's exit behaviour, so they are checked against the real binary
+// rather than against a package function.
 func binary(t *testing.T) string {
 	t.Helper()
 	buildOnce.Do(func() {
@@ -51,7 +51,7 @@ func binary(t *testing.T) string {
 			return
 		}
 		buildDir = dir
-		out := filepath.Join(dir, "authz")
+		out := filepath.Join(dir, "authz-gate")
 		cmd := exec.Command("go", "build", "-trimpath", "-o", out, ".")
 		cmd.Env = os.Environ()
 		if body, err := cmd.CombinedOutput(); err != nil {
@@ -124,7 +124,7 @@ func TestServeRefusesSuperuser(t *testing.T) {
 	for _, want := range []string{
 		"refusing to start",
 		"can create objects in schema public",
-		"The service must run as a role with only the grants in 0002_grants.sql.",
+		"only the grants in aivan-hud/doc/schema-ownership.md",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q; got:\n%s", want, out)
@@ -262,17 +262,18 @@ func TestServeStartsAndDrains(t *testing.T) {
 	}
 }
 
-// TestMigrateSubcommandExitsOne proves `authz migrate` fails with exit 1 and a
-// legible error when the application schema is absent.
-func TestMigrateSubcommandExitsOne(t *testing.T) {
+// TestMigrateSubcommandIsGone is the binary half of the handover: the schema
+// belongs to aivan-hud's history, so there is no migrate subcommand to run. A
+// unit that still documents one in its deployment will fail here rather than
+// silently applying an old embedded schema.
+func TestMigrateSubcommandIsGone(t *testing.T) {
 	dsn := harness.CreateDatabase(t)
-	harness.CreateRole(t, dsn, harness.ServiceRole, "")
 
 	cmd := exec.Command(binary(t), "migrate")
 	cmd.Env = append(os.Environ(), "AIVAN_DB_URL="+dsn)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatalf("migrate exited 0 without public.users; output: %s", out)
+		t.Fatalf("migrate exited 0; output: %s", out)
 	}
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
@@ -281,8 +282,41 @@ func TestMigrateSubcommandExitsOne(t *testing.T) {
 	if exitErr.ExitCode() != 1 {
 		t.Fatalf("exit code = %d, want 1; output: %s", exitErr.ExitCode(), out)
 	}
-	if !strings.Contains(string(out), "0001_init.sql") {
-		t.Errorf("output does not name the failing migration:\n%s", out)
+	if !strings.Contains(string(out), "unknown subcommand") {
+		t.Errorf("output does not report an unknown subcommand:\n%s", out)
+	}
+}
+
+// TestGateBinaryHasNoAdminCommands is the assertion doc/schema-handover.md §4
+// asks for: the shipped process cannot mint, revoke, enumerate, or purge. The
+// check is a string search over the built binary, which is what makes it a
+// property of the artefact rather than of the source a reviewer is reading.
+func TestGateBinaryHasNoAdminCommands(t *testing.T) {
+	body, err := os.ReadFile(binary(t))
+	if err != nil {
+		t.Fatalf("read binary: %v", err)
+	}
+	// Each entry is a string that exists only in the admin binary's dispatch or
+	// usage text, so a hit means a command name reached this build. Generic
+	// words are avoided on purpose: "migrate" appears in the refusal message
+	// (rake db:migrate) and "purge" in the Go runtime (runtime.gfpurge), and
+	// neither is a way to administer anything.
+	for _, forbidden := range []string{
+		"enroll-new",
+		"list-devices",
+		"revoke --device",
+		"service register",
+		"service retire",
+		"purged %d nonce",
+	} {
+		if strings.Contains(string(body), forbidden) {
+			t.Errorf("the gate binary contains %q", forbidden)
+		}
+	}
+	// A control: the enrollment path really is in there, so the search is
+	// looking at a binary that has the gate's own surface.
+	if !strings.Contains(string(body), "/__aivan/enroll") {
+		t.Fatal("the gate binary does not contain the enrollment path")
 	}
 }
 
