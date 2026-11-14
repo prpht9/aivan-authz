@@ -20,8 +20,8 @@ administration.
 | `cmd/authz-gate` | the pod, from `deploy/Dockerfile` | `serve` only |
 | `cmd/authz-admin` | a workstation, never an image | `enroll-new`, `list-devices`, `revoke`, `purge`, `service` |
 
-`make build` produces both in `bin/`. `make image` builds an image containing
-only the gate; `TestGateBinaryHasNoAdminCommands` and
+`rake build` produces both in `bin/`. `rake build:image` builds an image
+containing only the gate; `TestGateBinaryHasNoAdminCommands` and
 `TestDockerfileBuildsOnlyTheGate` are what keep it that way.
 
 ## Where the schema lives
@@ -31,7 +31,7 @@ runner. The integration harness applies hud's migrations to a scratch database,
 so the tests run against the schema an install actually has:
 
 ```console
-$ make testdb        # needs a Postgres the test user can create roles in
+$ rake testdb        # needs a Postgres the test user can create roles in
 ```
 
 `AIVAN_TEST_SUPERUSER_URL` defaults to `postgres://postgres@localhost/postgres`.
