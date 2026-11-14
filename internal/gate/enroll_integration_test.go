@@ -473,6 +473,131 @@ func TestClaimForAnotherOriginIsRefused(t *testing.T) {
 	}
 }
 
+// TestPhoneClaimIsAcceptedAndReachesAGatedRoute is the phone's whole wire:
+// the same endpoint, the same signed body, a record minted for a phone, and the
+// cookie that follows authenticates a verify with no Accept header and no page
+// in between.
+func TestPhoneClaimIsAcceptedAndReachesAGatedRoute(t *testing.T) {
+	e := newEnv(t)
+	e.seedUsers()
+	code := e.mintPending(userAlice, testHost, "phone", 15*time.Minute)
+
+	c := newClaimant(t, "ed25519")
+	req := claimFor(t, code, c)
+	req.Kind = "phone"
+
+	r := e.claim(req)
+	if r.Status != http.StatusCreated {
+		t.Fatalf("phone claim = %d %q, want 201", r.Status, r.Body)
+	}
+	if got := r.Header.Get(gate.HeaderDeviceKind); got != "phone" {
+		t.Errorf("X-Aivan-Device-Kind = %q, want phone", got)
+	}
+	cookie, err := parseSetCookie(r.Header.Get("Set-Cookie"), gate.SessionCookie)
+	if err != nil {
+		t.Fatalf("Set-Cookie: %v", err)
+	}
+
+	v := e.verifyWith(cookie, http.MethodGet, "/admin")
+	if v.Status != http.StatusOK {
+		t.Fatalf("verify = %d %q, want 200", v.Status, v.Body)
+	}
+	if got := v.Header.Get(gate.HeaderDeviceKind); got != "phone" {
+		t.Errorf("verify device kind = %q, want phone", got)
+	}
+
+	var out struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.Unmarshal([]byte(r.Body), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	deviceID, err := proof.ParseDeviceID(out.DeviceID)
+	if err != nil {
+		t.Fatalf("device id: %v", err)
+	}
+	_, origin, kind, _, _ := e.deviceRow(deviceID)
+	if origin != testHost || kind != "phone" {
+		t.Fatalf("device = %s/%s, want %s/phone", origin, kind, testHost)
+	}
+}
+
+// TestTabletClaimIsAccepted: the third kind in the column, on the same path.
+func TestTabletClaimIsAccepted(t *testing.T) {
+	e := newEnv(t)
+	e.seedUsers()
+	code := e.mintPending(userAlice, testHost, "tablet", 15*time.Minute)
+
+	req := claimFor(t, code, newClaimant(t, "es256"))
+	req.Kind = "tablet"
+	if r := e.claim(req); r.Status != http.StatusCreated {
+		t.Fatalf("tablet claim = %d %q, want 201", r.Status, r.Body)
+	}
+}
+
+// TestKindComesFromTheRecord: the body's kind has to be one the column allows,
+// and nothing more. The device's kind is the record's (S11), in both
+// directions, so a caller cannot choose what kind of device it gets by
+// describing itself differently from the code it was handed.
+func TestKindComesFromTheRecord(t *testing.T) {
+	e := newEnv(t)
+	e.seedUsers()
+
+	// A phone's code claimed by a client that calls itself a browser still
+	// produces a phone.
+	phone := claimFor(t, e.mintPending(userAlice, testHost, "phone", 15*time.Minute),
+		newClaimant(t, "ed25519"))
+	phone.Kind = "browser"
+	r := e.claim(phone)
+	if r.Status != http.StatusCreated {
+		t.Fatalf("phone code claimed as a browser = %d %q, want 201", r.Status, r.Body)
+	}
+	if got := r.Header.Get(gate.HeaderDeviceKind); got != "phone" {
+		t.Errorf("device kind = %q, want the record's phone", got)
+	}
+
+	// And a browser's code claimed by a client that calls itself a phone
+	// produces a browser.
+	browser := claimFor(t, e.mintPending(userAlice, testHost, "browser", 15*time.Minute),
+		newClaimant(t, "ed25519"))
+	browser.Kind = "phone"
+	r = e.claim(browser)
+	if r.Status != http.StatusCreated {
+		t.Fatalf("browser code claimed as a phone = %d %q, want 201", r.Status, r.Body)
+	}
+	if got := r.Header.Get(gate.HeaderDeviceKind); got != "browser" {
+		t.Errorf("device kind = %q, want the record's browser", got)
+	}
+}
+
+// TestBrowserAndPhoneCoexistForOneUser: one live device per (user, origin,
+// kind) allows both on one origin, which is the slot the unique index draws.
+func TestBrowserAndPhoneCoexistForOneUser(t *testing.T) {
+	e := newEnv(t)
+	e.seedUsers()
+
+	browser := claimFor(t, e.mintPending(userAlice, testHost, "browser", 15*time.Minute),
+		newClaimant(t, "ed25519"))
+	if r := e.claim(browser); r.Status != http.StatusCreated {
+		t.Fatalf("browser claim = %d %q, want 201", r.Status, r.Body)
+	}
+	phone := claimFor(t, e.mintPending(userAlice, testHost, "phone", 15*time.Minute),
+		newClaimant(t, "ed25519"))
+	phone.Kind = "phone"
+	if r := e.claim(phone); r.Status != http.StatusCreated {
+		t.Fatalf("phone claim = %d %q, want 201", r.Status, r.Body)
+	}
+	if n := e.countDevices(); n != 2 {
+		t.Fatalf("devices = %d, want a browser and a phone", n)
+	}
+
+	// A second phone on the same origin is the same slot, so it is refused.
+	second := claimFor(t, e.mintPending(userAlice, testHost, "phone", 15*time.Minute),
+		newClaimant(t, "ed25519"))
+	second.Kind = "phone"
+	e.claim(second).assertEnrollDenied(t)
+}
+
 // TestSecondClaimOfOneRecordIsRefused (and leaves exactly one device): the
 // record is consumed once and the second claim gets the same denial.
 func TestSecondClaimOfOneRecordIsRefused(t *testing.T) {
@@ -1108,16 +1233,17 @@ func TestClaimBodyMalformations(t *testing.T) {
 	base := claimFor(t, code, newClaimant(t, "ed25519"))
 
 	bodies := map[string]string{
-		"empty":            "",
-		"not JSON":         "hello",
-		"array":            "[]",
-		"unknown field":    strings.Replace(base.body(), "{", `{"extra":1,`, 1),
-		"trailing data":    base.body() + "{}",
-		"missing code":     claimRequest{Kind: base.Kind, Alg: base.Alg, PublicKey: base.PublicKey, Signature: base.Signature}.body(),
-		"missing sig":      claimRequest{Code: base.Code, Kind: base.Kind, Alg: base.Alg, PublicKey: base.PublicKey}.body(),
-		"non-b64 key":      strings.Replace(base.body(), base.PublicKey, "!!", 1),
-		"short code":       strings.Replace(base.body(), base.Code, base.Code[:25], 1),
-		"wrong kind phone": strings.Replace(base.body(), `"browser"`, `"phone"`, 1),
+		"empty":         "",
+		"not JSON":      "hello",
+		"array":         "[]",
+		"unknown field": strings.Replace(base.body(), "{", `{"extra":1,`, 1),
+		"trailing data": base.body() + "{}",
+		"missing code":  claimRequest{Kind: base.Kind, Alg: base.Alg, PublicKey: base.PublicKey, Signature: base.Signature}.body(),
+		"missing sig":   claimRequest{Code: base.Code, Kind: base.Kind, Alg: base.Alg, PublicKey: base.PublicKey}.body(),
+		"non-b64 key":   strings.Replace(base.body(), base.PublicKey, "!!", 1),
+		"short code":    strings.Replace(base.body(), base.Code, base.Code[:25], 1),
+		"unknown kind":  strings.Replace(base.body(), `"browser"`, `"watch"`, 1),
+		"empty kind":    strings.Replace(base.body(), `"browser"`, `""`, 1),
 	}
 	for name, body := range bodies {
 		t.Run(name, func(t *testing.T) {

@@ -22,9 +22,15 @@ import (
 // break is a credential nobody is watching (spec §6.5).
 const EnrollTTL = 15 * time.Minute
 
-// KindBrowser is the one device kind a pending enrollment can produce in this
-// phase. The column allows phone and tablet for a later phase that has a way to
-// claim them.
+// ClaimableKinds is the set of device kinds a minted record can produce. Every
+// kind here has a claim path: the gate's claim accepts all three, and the one
+// page serves a browser. The column allows exactly these, so a kind outside the
+// list is a typo rather than a future feature.
+var ClaimableKinds = []string{KindBrowser, "phone", "tablet"}
+
+// KindBrowser is the kind a browser page claims. A phone and a tablet claim the
+// same endpoint with the same body; only the pending record's kind differs, and
+// the device takes its kind from the record (S11).
 const KindBrowser = "browser"
 
 // EnrollOptions is one `authz-admin enroll-new` invocation.
@@ -61,13 +67,6 @@ func Enroll(ctx context.Context, pool *pgxpool.Pool, o EnrollOptions, hosts []st
 	}
 	if err := normaliseKind(o.Kind, &o.Kind); err != nil {
 		return out, err
-	}
-	// Phase F's claim endpoint accepts browser claims only: one static page,
-	// and a page is a browser. A phone or tablet record would be a code with no
-	// endpoint to spend it on, so the console refuses rather than printing one.
-	if o.Kind != KindBrowser {
-		return out, fmt.Errorf("--kind %s has no claim endpoint yet; "+
-			"this phase enrolls %s devices only", o.Kind, KindBrowser)
 	}
 	// The origin is one of the hosts the gate serves, so a typo is refused here
 	// rather than producing a record whose every claim is an origin mismatch.
@@ -221,13 +220,13 @@ func operatorName() string {
 // value a test can compute.
 func OperatorName() string { return operatorName() }
 
-// normaliseKind applies the default and refuses a kind outside the column's
-// check constraint, so a typo is a console error rather than a constraint
-// violation at claim time.
+// normaliseKind applies the default and refuses a kind outside ClaimableKinds,
+// so a typo is a console error rather than a constraint violation at claim
+// time.
 func normaliseKind(raw string, out *string) error {
 	switch raw {
 	case "":
-		*out = "browser"
+		*out = KindBrowser
 	case "browser", "phone", "tablet":
 		*out = raw
 	default:

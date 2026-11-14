@@ -223,22 +223,46 @@ select count(*), count(*) filter (where claimed_at is null and expires_at > now(
 	}
 }
 
-// TestEnrollRefusesAKindWithNoClaimEndpoint: the claim route accepts browser
-// only, so a phone or tablet code would be a credential with nowhere to spend
-// it. The console refuses instead of printing one.
-func TestEnrollRefusesAKindWithNoClaimEndpoint(t *testing.T) {
+// TestEnrollMintsEveryClaimableKind: a phone and a tablet claim the same
+// endpoint a browser does, so the console mints all three. The kind goes on the
+// record; the claim takes it from there.
+func TestEnrollMintsEveryClaimableKind(t *testing.T) {
 	f := setup(t)
-	clearDevices(t, f)
-	for _, kind := range []string{"phone", "tablet"} {
-		_, err := console.Enroll(context.Background(), f.op, console.EnrollOptions{
+	for _, kind := range console.ClaimableKinds {
+		clearDevices(t, f)
+		res, err := console.Enroll(context.Background(), f.op, console.EnrollOptions{
 			Username: "alice", Origin: "aivan-hud.home.arpa", Kind: kind,
 		}, hudHosts, "operator")
-		if err == nil {
-			t.Fatalf("%s was accepted, but the claim endpoint serves browser only", kind)
+		if err != nil {
+			t.Fatalf("%s: Enroll: %v", kind, err)
 		}
-		if !strings.Contains(err.Error(), "no claim endpoint") {
-			t.Errorf("%s: error %q does not explain why", kind, err)
+		if res.Kind != kind {
+			t.Errorf("%s: result kind = %q", kind, res.Kind)
 		}
+		var recorded string
+		if err := f.op.QueryRow(context.Background(),
+			`select kind from authz.pending_enrollments where id = $1`, res.RecordID).Scan(&recorded); err != nil {
+			t.Fatalf("%s: read record: %v", kind, err)
+		}
+		if recorded != kind {
+			t.Errorf("%s: record kind = %q", kind, recorded)
+		}
+	}
+}
+
+// TestEnrollRefusesAKindTheColumnDoesNotHave: the check constraint has three
+// kinds, and a fourth is a typo the console catches before a constraint does.
+func TestEnrollRefusesAKindTheColumnDoesNotHave(t *testing.T) {
+	f := setup(t)
+	clearDevices(t, f)
+	_, err := console.Enroll(context.Background(), f.op, console.EnrollOptions{
+		Username: "alice", Origin: "aivan-hud.home.arpa", Kind: "watch",
+	}, hudHosts, "operator")
+	if err == nil {
+		t.Fatal("watch was accepted, but authz.devices has no such kind")
+	}
+	if !strings.Contains(err.Error(), "browser, phone or tablet") {
+		t.Errorf("error %q does not name the kinds", err)
 	}
 }
 

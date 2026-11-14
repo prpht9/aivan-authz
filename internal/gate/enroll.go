@@ -30,10 +30,13 @@ const (
 	EnrollBodyLimit = 4096
 )
 
-// enrollKind is the one kind a browser page may claim. The column allows phone
-// and tablet as well, because a device of those kinds may be enrolled by other
-// means later; the page is a browser and must say so.
-const enrollKindBrowser = "browser"
+// enrollKinds is the set of kinds a claim may name. The column allows exactly
+// these, and each one has a claim path: a browser through the page, a phone or
+// tablet through the same JSON body. The kind a device actually receives comes
+// from the pending record, never from the request (S11); the request's kind has
+// to match that record, so a browser cannot spend a phone's code and a phone
+// cannot spend a browser's.
+var enrollKinds = map[string]bool{"browser": true, "phone": true, "tablet": true}
 
 // enrollDenialBody is the one 403 body. S9, S10 and S11 are indistinguishable to
 // the client in status, body and headers, so a wrong code, an expired record, a
@@ -196,8 +199,8 @@ func (g *Gate) claimEnrollment(w http.ResponseWriter, r *http.Request) {
 		g.enrollMalformed(w, r, f, "code is not the minted length")
 		return
 	}
-	if req.Kind != enrollKindBrowser {
-		g.enrollMalformed(w, r, f, "kind is not browser")
+	if !enrollKinds[req.Kind] {
+		g.enrollMalformed(w, r, f, "kind is not phone, tablet or browser")
 		return
 	}
 	if !proof.Supported(req.Alg) {
