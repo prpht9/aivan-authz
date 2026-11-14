@@ -480,26 +480,26 @@ that are cheaper to confirm than to debug later.
 Build a throwaway echo service and put it behind the exact middleware
 configuration, on a test host.
 
-- [ ] Deploy the echo service and a `Middleware` CRD with
+- [x] Deploy the echo service and a `Middleware` CRD with
       `authResponseHeadersRegex: "^X-Aivan-"`, an explicit
       `authRequestHeaders`, `preserveRequestMethod: true`,
       `forwardBody: true`, `maxBodySize: 1048576`, `preserveLocationHeader: true`.
-- [ ] Confirm a client-supplied `X-Aivan-User` is stripped before the echo
+- [x] Confirm a client-supplied `X-Aivan-User` is stripped before the echo
       service sees it, and that the value set by the auth response arrives.
-- [ ] Confirm a `401` from the auth service reaches the client with its body and
+- [x] Confirm a `401` from the auth service reaches the client with its body and
       `WWW-Authenticate` unchanged, and that a `302` arrives with `Location`
       intact. Check the `302` both with and without `preserveLocationHeader`:
       the default rewrites it to the auth service's cluster address.
-- [ ] Confirm a `200` from the auth service does not deliver `Set-Cookie`, then
+- [x] Confirm a `200` from the auth service does not deliver `Set-Cookie`, then
       confirm `addAuthCookiesToResponse` does, and record which behaviour the
       gate route design relies on (none — but verify the claim).
-- [ ] Record the exact values Traefik sends for `X-Forwarded-Method`, `-Proto`,
+- [x] Record the exact values Traefik sends for `X-Forwarded-Method`, `-Proto`,
       `-Host`, `-Uri`, including a request with a query string and one with a
       percent-encoded path.
-- [ ] Confirm what the client receives when the auth service is stopped, and
+- [x] Confirm what the client receives when the auth service is stopped, and
       record the status. Spec §8.2 requires a refusal, so an error status is
       acceptable, but the actual value has to be known and written down.
-- [ ] Write the findings to `doc/traefik-contract.md`.
+- [x] Write the findings to `doc/traefik-contract.md`.
 
 **Exit:** every line above is recorded with the observed output, and no line
 contradicts §2 or §5.1 of this plan.
@@ -526,32 +526,32 @@ Complete. Record of what was built and observed: `doc/phase-b-record.md`.
 
 ### Phase C — proof, policy, and the hot path
 
-- [ ] `internal/proof`: canonical string builder; Ed25519 and ES256 verify;
+- [x] `internal/proof`: canonical string builder; Ed25519 and ES256 verify;
       fixed algorithm list; golden vectors in `testdata/canonical.json`.
-- [ ] `internal/policy`: per host and prefix, with a test per class and a
+- [x] `internal/policy`: per host and prefix, with a test per class and a
       refusal for an uncovered path.
-- [ ] `POST /__aivan/nonce`, with the rate limiter and the table cap.
-- [ ] `ANY /__aivan/verify` and the §5.4 statement, prepared once.
-- [ ] The denial matrix in §5.8, including the `Accept` split.
-- [ ] `slog` decision records and reason codes.
-- [ ] Tests S1–S4, S7, S8, S14, S15, S17, S19, S21.
-- [ ] A query-counter test asserting exactly one statement per verified
+- [x] `POST /__aivan/nonce`, with the rate limiter and the table cap.
+- [x] `ANY /__aivan/verify` and the §5.4 statement, prepared once.
+- [x] The denial matrix in §5.8, including the `Accept` split.
+- [x] `slog` decision records and reason codes.
+- [x] Tests S1–S4, S7, S8, S14, S15, S17, S19, S21.
+- [x] A query-counter test asserting exactly one statement per verified
       request, and a benchmark that reports p50/p99.
-- [ ] A clock injection point, so skew and expiry tests do not sleep.
+- [x] A clock injection point, so skew and expiry tests do not sleep.
 
 **Exit:** those requirement tests are green, every one fails when its guard is
 removed, and the benchmark holds p99 under 5 ms with the database local.
 
 ### Phase D — sessions
 
-- [ ] `POST /__aivan/session` minting from a signed proof; `DELETE` for logout.
-- [ ] Cookie flags per §5.5, with a test asserting `__Host-`, `Secure`,
+- [x] `POST /__aivan/session` minting from a signed proof; `DELETE` for logout.
+- [x] Cookie flags per §5.5, with a test asserting `__Host-`, `Secure`,
       `HttpOnly`, `SameSite=Lax`, `Path=/`, and no `Domain`.
-- [ ] Sliding idle expiry with the 60 s write window, absolute cap enforced.
-- [ ] CSRF rule per §5.6, `same-site` refused.
-- [ ] `authz revoke --device <id>` deleting sessions in the same transaction.
-- [ ] `authz list-devices --username <name>`.
-- [ ] Tests S5, S13.
+- [x] Sliding idle expiry with the 60 s write window, absolute cap enforced.
+- [x] CSRF rule per §5.6, `same-site` refused.
+- [x] `authz revoke --device <id>` deleting sessions in the same transaction.
+- [x] `authz list-devices --username <name>`.
+- [x] Tests S5, S13.
 
 **Exit:** a revoked device's live session is refused on the next request, a
 cross-site POST under a cookie is refused, and a busy session issues at most one
@@ -559,16 +559,18 @@ write a minute (asserted from the query counter).
 
 ### Phase E — put aivan-hud behind the gate
 
-- [ ] Replace hud's single ingress with the three routers in §2: the gate
+- [x] Replace hud's single ingress with the three routers in §2: the gate
       router (`/__aivan/`), a public router for the list in `doc/auth.md`, and a
       gated catch-all carrying the `Middleware` CRD.
-- [ ] `current_user` and `require_admin!` in hud read `X-Aivan-User-Id` and
+- [x] `current_user` and `require_admin!` in hud read `X-Aivan-User-Id` and
       `X-Aivan-Roles` on gated routes, and never fall back to `session[:user_id]`
       there.
-- [ ] A build-tagged `devtools` subcommand that mints a session for a manual
-      test of the proxy loop, excluded from the production image.
-- [ ] `NetworkPolicy` admitting only Traefik to the gate; no `Ingress` for it.
-- [ ] S21 against the cluster: a device enrolled for hud, presented to a second
+- [x] A build-tagged `devtools` subcommand that mints a session for a manual
+      test of the proxy loop, excluded from the production image. Built in
+      Phase E and removed in Phase F, which replaced it with real enrollment;
+      the tag and the selftest routes went in Phase G.
+- [x] `NetworkPolicy` admitting only Traefik to the gate; no `Ingress` for it.
+- [x] S21 against the cluster: a device enrolled for hud, presented to a second
       test host behind the same gate, must be refused.
 
 **Exit:** acceptance 1, 3, 4 and 10 hold with the dev-minted session; a forged
@@ -597,14 +599,14 @@ refused; the enrolled device survives a gate restart.
 
 ### Phase G — hardening and operations
 
-- [ ] `413` at the gate with Traefik's `maxBodySize` as the ceiling above it
+- [x] `413` at the gate with Traefik's `maxBodySize` as the ceiling above it
       (S18), and a test for a body one byte over the limit.
-- [ ] Purge ticker for nonces and idle sessions.
-- [ ] Log hygiene test: a request carrying key material, a signature, and a
+- [x] Purge ticker for nonces and idle sessions.
+- [x] Log hygiene test: a request carrying key material, a signature, and a
       cookie produces no such value in the log output.
-- [ ] k6 profile per spec §8.2, mixed accept and deny, with the report kept.
-- [ ] Kill-the-gate test: gated routes refuse, public routes keep serving.
-- [ ] Runbook: bootstrap order, add a device, revoke a device, rotate the
+- [x] k6 profile per spec §8.2, mixed accept and deny, with the report kept.
+- [x] Kill-the-gate test: gated routes refuse, public routes keep serving.
+- [x] Runbook: bootstrap order, add a device, revoke a device, rotate the
       database credential, recover from a lost phone (procedure only, per spec §10).
 
 **Exit:** acceptance 5–9 hold and the runbook has been followed once end to end
