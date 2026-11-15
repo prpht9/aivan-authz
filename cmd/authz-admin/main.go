@@ -75,8 +75,11 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage: authz-admin <command>
 
 commands:
-  enroll-new --username <name> --origin <host> --kind <kind>
-                                 mint a one-time enrollment code, printed once
+  enroll-new --username <name> --origin <host> --kind <kind> [--qr auto|blocks|ascii|none]
+                                 mint a one-time enrollment code, printed once;
+                                 --qr also draws a square a phone can scan
+                                 (default auto: a square at a terminal, none when
+                                 the output is redirected)
   list-devices --username <name> list a person's devices
   revoke --device <uuid>         revoke a device and every session it holds
   purge                          remove expired nonces and sessions
@@ -130,15 +133,24 @@ func listDevices(out io.Writer, args []string) error {
 // enrollNew mints one pending enrollment and prints its code once. The origin
 // is validated against AIVAN_HOSTS here, so the console and the gate agree on
 // the set of hosts a record can name.
+//
+// --qr draws the enrollment URL as a square a phone can scan. It is a display
+// of the same code, not a second copy: the text block is unchanged and the
+// digest is still all the database holds.
 func enrollNew(out io.Writer, args []string) error {
-	opts, err := parseFlags(args, []string{"--username", "--origin", "--kind"})
+	opts, err := parseFlags(args, []string{"--username", "--origin", "--kind", "--qr"})
+	if err != nil {
+		return err
+	}
+
+	qrStyle, err := console.ParseQRStyle(opts["--qr"])
 	if err != nil {
 		return err
 	}
 
 	origin, ok := opts["--origin"]
 	if !ok || strings.TrimSpace(origin) == "" {
-		return errors.New("usage: enroll-new --username <name> --origin <host> --kind <kind>")
+		return errors.New("usage: enroll-new --username <name> --origin <host> --kind <kind> [--qr auto|blocks|ascii|none]")
 	}
 	hosts, err := config.ParseHosts(os.Getenv("AIVAN_HOSTS"))
 	if err != nil {
@@ -162,7 +174,7 @@ func enrollNew(out io.Writer, args []string) error {
 	if err != nil {
 		return fmt.Errorf("enroll-new: %w", err)
 	}
-	return console.WriteEnroll(out, res)
+	return console.WriteEnrollQR(out, res, qrStyle)
 }
 
 // revoke revokes one device and reports how many sessions it killed.

@@ -5,6 +5,7 @@ go 1.26.5
 require (
 	github.com/jackc/pgx/v5 v5.13.0
 	gopkg.in/yaml.v3 v3.0.1
+	rsc.io/qr v0.2.0
 )
 
 require (

@@ -93,6 +93,52 @@ Enter the code at https://aivan-hud.home.arpa/__aivan/enroll within 15m0s. It is
 
 The code is 26 Crockford characters with a dash every four.
 
+### The square, and the phone
+
+Run at a terminal, the command also draws a QR square under the text. A phone
+camera scans it and opens the enrollment page with the code already filled in.
+The text above is unchanged, so anything that parses the output still works.
+
+```console
+$ ./authz-admin enroll-new --username chris --origin aivan-hud.home.arpa --kind phone
+enrollment code: Q3N2-QA2B-P4BB-FAN9-DTW1-RRXD-2M
+user: chris (id 10)
+origin: aivan-hud.home.arpa
+kind: phone
+record: 9a82a19a-7e53-41d9-8a8f-2a3c0d833be5
+expires_at: 2026-11-14T04:35:59Z
+
+Enter the code at https://aivan-hud.home.arpa/__aivan/enroll within 15m0s. It is shown once.
+
+Scan to open the enrollment page on a phone:
+
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+█ ▄▄▄▄▄ █▀▀▄█▀▄▀█ ▄▄▄▄▄ █▀█ ▄▄▄▄▄ █
+█ █   █ █▀█▄▄ ▀▀█ █   █ █▀▀ █   █ █
+█ █▄▄▄█ █▀▄▀▀▄▀ █ █▄▄▄█ █ ▀ █▄▄▄█ █
+█▄▄▄▄▄▄▄█▄▀▄█▄▀▄█▄▄▄▄▄▄▄█▄▀▄█▄▄▄▄▄▄▄█
+█ ▀▄▀▄ ▄▀▀█ ▄ ▀█ ▄▀▀  ▀▄█▄▀▄█ ▀▄▀▄ ▄▀█
+█▄▄▀▀█▀▄▄█▄ ▄▀▀▀ █▀ █ ▄▀▄▄▀█▄▄▀▄▀▄ ██
+█ ▄▄▄ █▀▄▀ ▀▄▀▀▄▄▄ ▀▀▀▄▀█▄▀▄█ ▄▄▄ █▀█
+█ █▄▄▄█ █▀▀▀▀▀▀▄▀▀ ▄▀▀▄▀▀▀▄▀█ █▄▄▄█ ██
+█▄▄▄▄▄▄▄█▄▄█▄▄█▄▄▄█▄█▄█▄▄█▄▄█▄▄▄▄▄▄▄██
+  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+```
+
+`--qr` chooses the drawing:
+
+| Value | What it draws |
+|---|---|
+| `auto` (default) | the square when stdout is a terminal, nothing when it is redirected |
+| `blocks` | the square with half-block glyphs, forced black-on-white |
+| `ascii` | the square with two characters per module and no escape codes |
+| `none` | the text block only, which is what a script sees by default |
+
+The default is `auto`, so a command in a pipeline or a log file gets exactly the
+output it got before the square existed. `blocks` sets its own colours because
+a dark terminal would otherwise draw a light-on-dark square, which a camera
+refuses.
+
 Two facts an operator must know:
 
 - The command needs the database credential and therefore a port-forward. It is

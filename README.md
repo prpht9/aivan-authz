@@ -24,6 +24,17 @@ administration.
 containing only the gate; `TestGateBinaryHasNoAdminCommands` and
 `TestDockerfileBuildsOnlyTheGate` are what keep it that way.
 
+## Minting a code, and the square a phone scans
+
+`authz-admin enroll-new` prints a code once. At a terminal it also draws a QR
+square that encodes the enrollment URL with the code in it, so a phone camera
+opens the page with the field filled. `--qr` chooses the drawing (`auto` by
+default, `blocks`, `ascii`, `none`); redirected output gets no square, so
+scripts see exactly what they saw before.
+
+`doc/enrollment-qr.md` is the contract for the mobile app: the payload, the
+claim the app posts, and what it must send afterwards.
+
 ## Where the schema lives
 
 `aivan-hud/db/migration/`. This repository contains no DDL and no migration
@@ -74,5 +85,5 @@ bypass.
 export SUPW="$(kubectl -n aivan-core get secret aivan-core-superuser -o jsonpath='{.data.password}' | base64 -d)"
 export AIVAN_DB_URL="postgres://postgres:${SUPW}@127.0.0.1:5433/aivan_core?sslmode=disable"
 ./bin/authz-admin revoke --device 62aa0ecf-c79c-3792-fec6-5dd72c70a5ec
-./bin/authz-admin enroll-new --username alice --origin aivan-hud.home.arpa --kind browser
+./bin/authz-admin enroll-new --username alice --origin aivan-hud.home.arpa --kind browser --qr
 ```

@@ -3,6 +3,7 @@
 package main_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"rsc.io/qr"
 
 	"github.com/chris/aivan-authz/internal/gate"
 	"github.com/chris/aivan-authz/internal/proof"
@@ -193,6 +197,174 @@ func TestDevSessionIsGone(t *testing.T) {
 	if !strings.Contains(help, "enroll-new") {
 		t.Errorf("help does not list enroll-new:\n%s", help)
 	}
+}
+
+// TestEnrollNewRefusesAnUnknownQRStyle: a typo in --qr is a usage error, not a
+// silently substituted style, and it must not mint a code first.
+func TestEnrollNewRefusesAnUnknownQRStyle(t *testing.T) {
+	_, super := harness.Setup(t)
+	seedOneUser(t, super, "alice")
+
+	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
+		"enroll-new", "--username", "alice", "--origin", "aivan-hud.home.arpa", "--qr", "ascci")
+	if code == 0 {
+		t.Fatalf("--qr ascci was accepted; output: %s", out)
+	}
+	if strings.Contains(out, "enrollment code: ") {
+		t.Errorf("a refused command minted a code:\n%s", out)
+	}
+	if !strings.Contains(out, "--qr must be") {
+		t.Errorf("output does not name the --qr values:\n%s", out)
+	}
+}
+
+// TestEnrollNewQRDrawsTheEnrollmentURL is the end-to-end shape of the feature:
+// the real binary, a real mint, and a square whose payload is the URL the page
+// reads. The square's characters are turned back into modules here, so this
+// fails if the renderer, the URL or the quiet zone drifts.
+func TestEnrollNewQRDrawsTheEnrollmentURL(t *testing.T) {
+	_, super := harness.Setup(t)
+	seedOneUser(t, super, "alice")
+
+	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
+		"enroll-new", "--username", "alice", "--origin", "aivan-hud.home.arpa",
+		"--kind", "phone", "--qr", "ascii")
+	if code != 0 {
+		t.Fatalf("exit = %d; output: %s", code, out)
+	}
+
+	printed := strings.TrimSpace(strings.TrimPrefix(strings.SplitN(out, "\n", 2)[0], "enrollment code: "))
+	if !proof.ValidEnrollCode(proof.NormalizeEnrollCode(printed)) {
+		t.Fatalf("printed code %q is not valid", printed)
+	}
+
+	// The text block is unchanged and still carries the code once.
+	if n := strings.Count(out, printed); n != 1 {
+		t.Fatalf("the code appears %d times as text, want once", n)
+	}
+
+	// The square is the URL the page reads, drawn faithfully. Comparing the
+	// drawn modules against the encoder's own bitmap is what catches a
+	// transposed or shifted drawing; the payload is fixed, so a wrong payload
+	// cannot pass.
+	want := "https://aivan-hud.home.arpa/__aivan/enroll?code=" + printed
+	if err := compareDrawnSquare(out, want); err != nil {
+		t.Fatal(err)
+	}
+
+	// The code in the square is the credential, not a second value: its digest
+	// is the row the claim will match. This is the loop the phone closes, minus
+	// the camera.
+	hash := proof.SHA256Sum([]byte(proof.NormalizeEnrollCode(printed)))
+	var stored int
+	if err := connectScan(t, super, `
+select count(*) from authz.pending_enrollments
+ where code_hash = $1 and origin = 'aivan-hud.home.arpa' and kind = 'phone'
+   and claimed_at is null`, []any{hash[:]}, &stored); err != nil {
+		t.Fatalf("read pending record: %v", err)
+	}
+	if stored != 1 {
+		t.Fatalf("the printed code matches %d pending records, want 1", stored)
+	}
+}
+
+// connectScan runs a one-row query as the operator credential. It is local to
+// this file because only the QR test needs to read back what the command wrote.
+func connectScan(t *testing.T, dsn, sql string, args []any, dest ...any) error {
+	t.Helper()
+	conn, err := pgx.Connect(context.Background(), dsn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	return conn.QueryRow(context.Background(), sql, args...).Scan(dest...)
+}
+
+// TestEnrollNewQRAutoWritesNoSquareToAPipe: the default must leave redirected
+// output alone. Every existing test in this file runs without --qr and compares
+// text, so this is the explicit form of that guarantee.
+func TestEnrollNewQRAutoWritesNoSquareToAPipe(t *testing.T) {
+	_, super := harness.Setup(t)
+	seedOneUser(t, super, "alice")
+
+	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
+		"enroll-new", "--username", "alice", "--origin", "aivan-hud.home.arpa")
+	if code != 0 {
+		t.Fatalf("exit = %d; output: %s", code, out)
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("default output carries an escape sequence:\n%q", out)
+	}
+	if strings.Contains(out, "Scan to open") {
+		t.Errorf("default output carries a square instruction:\n%s", out)
+	}
+	if !strings.HasSuffix(out, "It is shown once.\n") {
+		t.Errorf("default output does not end with the text block:\n%q", out)
+	}
+}
+
+// compareDrawnSquare turns the ASCII square in a command's output back into a
+// module grid and compares it with the encoder's bitmap for want.
+//
+// The comparison is module by module rather than a decode, because rsc.io/qr
+// only encodes: a transposed, shifted or border-less drawing would still be a
+// valid grid, and only a positional check catches it.
+func compareDrawnSquare(out, want string) error {
+	const marker = "Scan to open the enrollment page on a phone:"
+	idx := strings.Index(out, marker)
+	if idx < 0 {
+		return fmt.Errorf("output holds no square:\n%s", out)
+	}
+	lines := strings.Split(out[idx+len(marker):], "\n")
+	// The marker is followed by a blank line. Skip exactly that separator:
+	// trimming whitespace-only lines would eat the square's own quiet zone,
+	// which is rows of spaces.
+	for len(lines) > 0 && lines[0] == "" {
+		lines = lines[1:]
+	}
+
+	var grid [][]bool
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes)%2 != 0 {
+			return fmt.Errorf("square row is not an even number of runes: %q", line)
+		}
+		row := make([]bool, 0, len(runes)/2)
+		for i := 0; i < len(runes); i += 2 {
+			row = append(row, string(runes[i:i+2]) == "██")
+		}
+		grid = append(grid, row)
+	}
+
+	code, err := qr.Encode(want, qr.M)
+	if err != nil {
+		return fmt.Errorf("encode want: %w", err)
+	}
+	// The spec's minimum quiet zone, as a literal: the check must not follow
+	// the constant it is checking.
+	size := code.Size + 2*4
+	if len(grid) != size {
+		return fmt.Errorf("drew %d rows, want %d", len(grid), size)
+	}
+	for y := range grid {
+		if len(grid[y]) != size {
+			return fmt.Errorf("row %d is %d modules, want %d", y, len(grid[y]), size)
+		}
+		for x := 0; x < size; x++ {
+			dark := false
+			mx, my := x-4, y-4
+			if mx >= 0 && my >= 0 && mx < code.Size && my < code.Size {
+				dark = code.Black(mx, my)
+			}
+			if grid[y][x] != dark {
+				return fmt.Errorf("module (%d,%d) is %v, encoder says %v", x, y, grid[y][x], dark)
+			}
+		}
+	}
+	return nil
 }
 
 // TestShippedBinaryHasNoSelftest: Phase G removed the build tag and the

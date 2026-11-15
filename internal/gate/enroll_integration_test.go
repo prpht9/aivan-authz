@@ -988,6 +988,44 @@ func TestEnrollPageReferencesItsOwnAssets(t *testing.T) {
 	}
 }
 
+// TestEnrollPageScrubsTheCodeFromTheAddressBar: a scanned square carries the
+// code in ?code=, and a code is a live single-use secret. The page must read it
+// and then replace the URL without it, or the secret is left in the browser's
+// history and a reload would replay it.
+//
+// This checks the script's shape rather than running it: the suite has no DOM.
+// The properties that matter are that the read happens, that replaceState is
+// used (pushState would add an entry), and that code is removed from the query
+// before the URL is rewritten.
+func TestEnrollPageScrubsTheCodeFromTheAddressBar(t *testing.T) {
+	e := newEnv(t)
+
+	req, err := http.NewRequest(http.MethodGet, e.server.URL+"/__aivan/enroll/app.js", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Forwarded-Host", testHost)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatalf("do app.js: %v", err)
+	}
+	js := readResponse(t, resp).Body
+
+	if !strings.Contains(js, "params.delete('code')") {
+		t.Error("app.js does not remove code from the query string")
+	}
+	if !strings.Contains(js, "history.replaceState") {
+		t.Error("app.js does not replace the URL, so the code would stay in history")
+	}
+	if strings.Contains(js, "history.pushState") {
+		t.Error("app.js pushes a history entry for the code")
+	}
+	// The prefill still has to work, or a scan lands on an empty field.
+	if !strings.Contains(js, "els.code.value = prefill") {
+		t.Error("app.js no longer prefills the field from ?code=")
+	}
+}
+
 // TestClaimedSessionAuthenticatesVerify is the handoff to the rest of the
 // gate: the cookie the claim set is the cookie a verify accepts, and the device
 // id and identity match.

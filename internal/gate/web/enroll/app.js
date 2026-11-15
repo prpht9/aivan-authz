@@ -184,9 +184,22 @@ async function claim(code, choice, key) {
 // ---------------------------------------------------------------------------
 async function main() {
   // Pre-fill from ?code=, which is how an operator hands over a code without a
-  // copy-paste race. It is not an authority: the claim still has to verify.
-  const prefill = new URLSearchParams(location.search).get('code');
-  if (prefill) els.code.value = prefill;
+  // copy-paste race, and how a scanned square lands here. It is not an
+  // authority: the claim still has to verify.
+  //
+  // The code is a live single-use secret, so it is scrubbed from the address
+  // bar as soon as it is read. history.replaceState leaves no entry for it, so
+  // a reload, a bookmark or a browser history screen cannot replay it, and the
+  // page keeps no copy beyond the field the person can already see.
+  const params = new URLSearchParams(location.search);
+  const prefill = params.get('code');
+  if (prefill) {
+    els.code.value = prefill;
+    params.delete('code');
+    const rest = params.toString();
+    history.replaceState(null, '',
+      location.pathname + (rest ? '?' + rest : '') + location.hash);
+  }
 
   if (!window.crypto || !window.crypto.subtle) {
     // No WebCrypto means no key this page can defend. Say so plainly; an

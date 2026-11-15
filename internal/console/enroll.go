@@ -192,14 +192,39 @@ values ($1, $2, 'console', 'enroll', 'minted', $3, $4)`,
 // WriteEnroll prints the code once, with the record and expiry it belongs to.
 // There is no second path that prints it: the digest is all the database holds.
 func WriteEnroll(w io.Writer, r EnrollResult) error {
+	return WriteEnrollQR(w, r, QRNone)
+}
+
+// WriteEnrollQR is WriteEnroll plus the square a phone scans.
+//
+// The text is byte-identical to WriteEnroll's, so a script that parses this
+// output is unaffected and the code still appears exactly once as text. The
+// square encodes the enrollment URL with the code in its query string, which is
+// the same secret in a form a camera carries; it is one display of the code,
+// not a second one, and it is not recoverable from the database either.
+//
+// The square goes last because a terminal scrolled to the bottom is what the
+// operator is looking at when they reach for the phone.
+func WriteEnrollQR(w io.Writer, r EnrollResult, style QRStyle) error {
 	if _, err := fmt.Fprintf(w, "enrollment code: %s\n", r.Code); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(w, "user: %s (id %d)\norigin: %s\nkind: %s\nrecord: %s\nexpires_at: %s\n\n"+
+	if _, err := fmt.Fprintf(w, "user: %s (id %d)\norigin: %s\nkind: %s\nrecord: %s\nexpires_at: %s\n\n"+
 		"Enter the code at https://%s/__aivan/enroll within %s. It is shown once.\n",
 		r.Username, r.UserID, r.Origin, r.Kind, r.RecordID,
-		r.Expires.UTC().Format(time.RFC3339), r.Origin, time.Until(r.Expires).Round(time.Minute))
-	return err
+		r.Expires.UTC().Format(time.RFC3339), r.Origin, time.Until(r.Expires).Round(time.Minute)); err != nil {
+		return err
+	}
+
+	// Nothing to draw when the style resolves to none. Checking before the
+	// instruction line keeps redirected output byte-identical.
+	if style.resolve(w) == QRNone {
+		return nil
+	}
+	if _, err := fmt.Fprintf(w, "\nScan to open the enrollment page on a phone:\n\n"); err != nil {
+		return err
+	}
+	return WriteQR(w, EnrollURL(r.Origin, r.Code), style)
 }
 
 // operatorName is the label an audit row carries for a console action. It is
