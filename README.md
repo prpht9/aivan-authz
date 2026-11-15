@@ -66,3 +66,13 @@ bypass.
 - `aivan-hud/doc/plan-approvals.md` — the phone approval flow, which is the
   reason this gate exists.
 - `aivan-hud/doc/auth.md` — how the application consumes the gate's headers.
+
+# Command examples
+
+```
+
+export SUPW="$(kubectl -n aivan-core get secret aivan-core-superuser -o jsonpath='{.data.password}' | base64 -d)"
+export AIVAN_DB_URL="postgres://postgres:${SUPW}@127.0.0.1:5433/aivan_core?sslmode=disable"
+./bin/authz-admin revoke --device 62aa0ecf-c79c-3792-fec6-5dd72c70a5ec
+./bin/authz-admin enroll-new --username alice --origin aivan-hud.home.arpa --kind browser
+```
