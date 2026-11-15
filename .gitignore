@@ -5,3 +5,10 @@
 /videos
 /scratch
 /seed
+
+# The root CA's public certificate is tracked in deploy/ca. Its private key
+# never enters this repository: a key here would let anyone mint a certificate
+# for any host in the house. Refuse the shapes a stray copy takes.
+*.key
+*.pem
+!deploy/ca/*.crt
