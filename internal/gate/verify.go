@@ -457,8 +457,14 @@ func (g *Gate) bodyDigest(w http.ResponseWriter, r *http.Request, method string)
 }
 
 // denyNoProof follows the denial matrix: an HTML navigation is redirected to
-// the enrollment page, everything else gets the constant 401. A non-GET method
-// is never redirected, because redirecting a body loses it.
+// the login page, everything else gets the constant 401. A non-GET method is
+// never redirected, because redirecting a body loses it.
+//
+// The login page, not the enrollment page, because the gate cannot tell an
+// unenrolled browser from one whose session merely lapsed: both arrive with no
+// cookie. The login page can tell, from the key in IndexedDB, and it is the one
+// place that decides between minting and enrolling. The enrollment page stays
+// reachable at its own path and is linked from the login page.
 func (g *Gate) denyNoProof(w http.ResponseWriter, r *http.Request, f forwarded) {
 	html := false
 	for _, v := range r.Header.Values("Accept") {
@@ -468,7 +474,7 @@ func (g *Gate) denyNoProof(w http.ResponseWriter, r *http.Request, f forwarded) 
 		}
 	}
 	if html && (f.Method == http.MethodGet || f.Method == http.MethodHead) {
-		w.Header().Set("Location", "/__aivan/enroll?rd="+url.QueryEscape(f.Target))
+		w.Header().Set("Location", LoginPath+"?rd="+url.QueryEscape(f.Target))
 		w.Header().Set("Cache-Control", "no-store")
 		g.decide.write(r, decision{RequestID: reqid.From(r.Context()), Host: f.Host, Method: f.Method,
 			Allow: false, Reason: ReasonNoProof, Status: http.StatusFound})

@@ -116,8 +116,14 @@ exported), signs the claim, and receives a session cookie.
 ## 2. Add a device
 
 1. Mint a code (above) for that person, that host, and the kind `browser`.
-2. Open the gated host, which redirects to `/__aivan/enroll?rd=…`.
-3. Paste the code.
+2. Open the gated host. With no session the gate sends the browser to
+   `/__aivan/login?rd=…`, which mints from a key the browser already holds or
+   links to `/__aivan/enroll?rd=…` when it holds none.
+3. On the enrollment page, paste the code.
+
+A person who has enrolled this browser before signs in again with the code they
+do not have: the login page re-proves the stored key and lands on the page they
+asked for. Re-enrolling is only for a browser with no key, or a revoked one.
 
 What the operator sees when the person already has a live device of that kind:
 

@@ -87,19 +87,25 @@ func (g *Gate) enrollPage(w http.ResponseWriter, r *http.Request) {
 		g.refuse(w, r, http.StatusNotFound, ReasonBadRequest, forwarded{}, "enroll page is not built")
 		return
 	}
+	g.servePage(w, r, g.page.Index)
+}
+
+// servePage writes one embedded document with the headers every gate page
+// carries. Both pages hold a key's proof and neither needs a third-party
+// origin: no CDN, no font host, no analytics. The CSP that says so is the
+// second half of "works on a LAN with no internet", and it is why a
+// compromised application on the same host cannot inject a script into a page
+// that signs.
+func (g *Gate) servePage(w http.ResponseWriter, r *http.Request, body []byte) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// The page needs no third-party origin: no CDN, no font host, no analytics.
-	// A CSP that says so is the second half of "works on a LAN with no
-	// internet", and it is why a compromised app on the same host cannot inject
-	// a script into the page that holds a key.
 	w.Header().Set("Content-Security-Policy",
 		"default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; "+
 			"img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
-		_, _ = w.Write(g.page.Index)
+		_, _ = w.Write(body)
 	}
 }
 
@@ -133,6 +139,12 @@ func (g *Gate) EnrollAsset(w http.ResponseWriter, r *http.Request) {
 		g.refuse(w, r, http.StatusNotFound, ReasonBadRequest, forwarded{}, "no such asset")
 		return
 	}
+	g.serveScript(w, r, body)
+}
+
+// serveScript writes one embedded JavaScript file. A page's assets are modules
+// with no build step, so they are served as text with no cache.
+func (g *Gate) serveScript(w http.ResponseWriter, r *http.Request, body []byte) {
 	h := w.Header()
 	h.Set("Content-Type", "text/javascript; charset=utf-8")
 	h.Set("Cache-Control", "no-store")

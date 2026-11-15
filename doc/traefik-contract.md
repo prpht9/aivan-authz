@@ -136,12 +136,12 @@ This is the finding that contradicts the plan. Default middleware, no
 $ curl -sk --resolve echo-redirect.home.arpa:443:192.168.192.2 \
     -o /dev/null -D- https://echo-redirect.home.arpa/one
 HTTP/2 302
-location: http://echo.aivan.svc.cluster.local:8080/__aivan/enroll?rd=%2Fadmin
+location: http://echo.aivan.svc.cluster.local:8080/__aivan/login?rd=%2Fadmin
 content-length: 0
 date: Fri, 13 Nov 2026 18:13:39 GMT
 ```
 
-Traefik resolved the relative `Location: /__aivan/enroll?rd=%2Fadmin` against the
+Traefik resolved the relative `Location: /__aivan/login?rd=%2Fadmin` against the
 **auth service's own address** and handed the browser an internal cluster URL.
 `curl` did not follow it (`-o /dev/null -D-`); a browser would follow it and fail
 to reach `echo.aivan.svc.cluster.local`.
@@ -152,7 +152,7 @@ With `preserveLocationHeader: true`:
 $ curl -sk --resolve echo-redirect2.home.arpa:443:192.168.192.2 \
     -o /dev/null -D- https://echo-redirect2.home.arpa/one
 HTTP/2 302
-location: /__aivan/enroll?rd=%2Fadmin
+location: /__aivan/login?rd=%2Fadmin
 content-length: 0
 date: Fri, 13 Nov 2026 18:13:49 GMT
 ```
@@ -160,6 +160,12 @@ date: Fri, 13 Nov 2026 18:13:49 GMT
 Byte-identical to what the auth service returned. The status is not rewritten
 either way; only `Location` is. `preserveLocationHeader: true` is mandatory on
 the gate's middleware.
+
+The examples above were recorded in Phase E against the enrollment page, which
+was the redirect target then. Since phase 1 of `aivan-hud`'s
+`doc/plan-device-tiers-and-reproof.md` the bounce names `/__aivan/login`, and the
+paths in the transcripts are updated to match. The behaviour being recorded—the
+rewrite and the fix—is unchanged.
 
 ### 500 from the auth service
 
@@ -216,7 +222,7 @@ auth response's other headers go to the client too:
 $ curl -sk --resolve echo-rc.home.arpa:443:192.168.192.2 \
     -o /dev/null -D- https://echo-rc.home.arpa/one
 HTTP/2 302
-location: /__aivan/enroll?rd=%2Fadmin
+location: /__aivan/login?rd=%2Fadmin
 set-cookie: aivan_session=probe; Path=/; HttpOnly; Secure; SameSite=Lax
 x-aivan-auth-method: GET
 x-aivan-auth-uri: /one

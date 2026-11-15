@@ -195,6 +195,8 @@ func newEnvWithLog(t testing.TB, sink io.Writer) *env {
 	mux.HandleFunc("/__aivan/session", g.Session)
 	mux.HandleFunc(gate.EnrollPath, g.Enroll)
 	mux.HandleFunc("/__aivan/enroll/", g.EnrollAsset)
+	mux.HandleFunc(gate.LoginPath, g.Login)
+	mux.HandleFunc("/__aivan/login/", g.LoginAsset)
 	e.server = httptest.NewServer(mux)
 	t.Cleanup(e.server.Close)
 
@@ -233,6 +235,8 @@ func (e *env) serverAtBodyLimit(t testing.TB, maxBody int64) *env {
 	mux.HandleFunc("/__aivan/session", g.Session)
 	mux.HandleFunc(gate.EnrollPath, g.Enroll)
 	mux.HandleFunc("/__aivan/enroll/", g.EnrollAsset)
+	mux.HandleFunc(gate.LoginPath, g.Login)
+	mux.HandleFunc("/__aivan/login/", g.LoginAsset)
 	copied.server = httptest.NewServer(mux)
 	t.Cleanup(copied.server.Close)
 	client := copied.server.Client()
@@ -745,6 +749,34 @@ func (e *env) lastSeen(d device) *time.Time {
 		e.t.Fatalf("read last_seen_at: %v", err)
 	}
 	return at
+}
+
+// expireSession moves a cookie's session into the past, so the next verify
+// meets the state a quiet browser reaches after the absolute cap: a cookie that
+// is syntactically a session and a row that is no longer live.
+func (e *env) expireSession(cookie string) {
+	e.t.Helper()
+	hash := proof.SHA256Sum([]byte(cookie))
+	harness.Exec(e.t, e.super,
+		`update authz.sessions
+		    set idle_expires_at = now() - interval '1 hour',
+		        absolute_expires_at = now() - interval '1 hour'
+		  where token_hash = decode('`+fmt.Sprintf("%x", hash[:])+`', 'hex')`)
+}
+
+// get sends a bare GET to a path on the gate's own router, with no proof and
+// no cookie.
+func (e *env) get(path string) *response {
+	e.t.Helper()
+	req, err := http.NewRequest(http.MethodGet, e.server.URL+path, nil)
+	if err != nil {
+		e.t.Fatalf("new request: %v", err)
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		e.t.Fatalf("do: %v", err)
+	}
+	return readResponse(e.t, resp)
 }
 
 // Time helpers, wrapped so the benchmark file does not import time twice.

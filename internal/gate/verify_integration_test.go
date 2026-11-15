@@ -422,6 +422,10 @@ func headerDiff(a, b http.Header) string {
 }
 
 // TestNoProofHTMLGetsARedirect: the Accept split, and never on a POST.
+//
+// The redirect names the login page: a browser that arrives with no cookie may
+// be unenrolled or may have lapsed, and only the page that can read the stored
+// key tells them apart.
 func TestNoProofHTMLGetsARedirect(t *testing.T) {
 	e := newEnv(t)
 	e.seedUsers()
@@ -438,7 +442,7 @@ func TestNoProofHTMLGetsARedirect(t *testing.T) {
 	if r.Status != http.StatusFound {
 		t.Fatalf("status = %d %q, want 302", r.Status, r.Body)
 	}
-	want := "/__aivan/enroll?rd=" + "%2Fadmin%2Fusers%3Fx%3D1"
+	want := "/__aivan/login?rd=" + "%2Fadmin%2Fusers%3Fx%3D1"
 	if got := r.Header.Get("Location"); got != want {
 		t.Fatalf("Location = %q, want %q", got, want)
 	}

@@ -66,6 +66,11 @@ func NewRouterWith(o RouterOptions) http.Handler {
 		mux.HandleFunc(gate.VerifySignaturePath, o.Gate.VerifySignature)
 		mux.HandleFunc(gate.EnrollPath, o.Gate.Enroll)
 		mux.HandleFunc("/__aivan/enroll/", o.Gate.EnrollAsset)
+		// The login page re-proves the key the browser already holds. It is on
+		// this router for the same reason the enrollment page is: the page
+		// whose job is to mint a session must not require one.
+		mux.HandleFunc(gate.LoginPath, o.Gate.Login)
+		mux.HandleFunc("/__aivan/login/", o.Gate.LoginAsset)
 	}
 
 	var h http.Handler = mux
