@@ -57,6 +57,9 @@ The harness skips rather than fails when no cluster is reachable or when the
 | `doc/aivan-initial-plan.md` | how it was built, phase by phase. §4.1 and §9 are superseded |
 | `doc/design-notes.md` | the reasoning behind the decisions |
 | `doc/runbook.md` | the operator procedure, amended 2026-11-14 for the handover |
+| `doc/pentest-plan.md` | the pentest: scope, cases, tooling, and what reconnaissance already found |
+| `doc/pentest-report.md` | what the run found: 25 findings, the coverage matrix, and what stayed unproven |
+| `doc/pentest-evidence/` | the case-by-case notes each finding traces to |
 | `doc/phase-*-record.md` | what each phase actually produced |
 | `implementation-phase-*.md` | the standalone work files for phases A–G |
 
