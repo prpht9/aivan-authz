@@ -233,6 +233,63 @@ is the whole procedure.
 
 ---
 
+## 4a. Ship a new build
+
+Three rake tasks, and the third is the one that matters.
+
+```console
+$ export AIVAN_NS=hermes-agent
+$ rake push           # build the image, push it, confirm the registry took it
+$ rake deploy:verify  # read-only: what is running, and is it HEAD?
+$ rake deploy         # push, apply, roll, and verify again
+```
+
+`rake push` does not trust that a push with no error landed. It reads the tag's
+manifest back from the registry and compares its config digest with the image it
+just built, so a push to the wrong tag or a registry that dropped the blob is a
+failure here rather than a pod that runs yesterday's bytes.
+
+`rake deploy:verify` is read-only and safe to run at any time. It reports two
+things: the ready pod's imageID against the digest the registry serves for the
+tag, and the `vcs.revision` stamped into the running binary against `HEAD`. Both
+have to match. The second check exists because of PA1 in
+`doc/pentest-evidence/a.md`: the deployed gate was seven commits behind the tree
+with every build step reporting success.
+
+A policy or environment change needs only the manifest, and takes no rebuild:
+
+```console
+$ DRY_RUN=1 rake deploy:apply   # validate against the API server first
+$ rake deploy:apply
+$ kubectl -n "$AIVAN_NS" rollout restart deployment/aivan-authz
+```
+
+`deploy:apply` refuses to run when a Secret the manifest mounts is missing
+(`aivan-authz-db`). That is a refusal rather than a warning because the apply
+would otherwise succeed and leave the pod pending on a volume. The
+`kubectl create secret` command is in `deploy/k8s.yaml`'s header.
+
+The purge CronJob is not in this manifest. It belongs to aivan-hud's chart,
+because that project owns schema authz and its role is the one that can reach
+the two tables without a second credential:
+
+```console
+$ helm -n "$AIVAN_NS" upgrade aivan-hud aivan-hud/k8s
+```
+
+It runs as `aivan_core` with `DELETE` plus a column-level `SELECT` on the two
+predicate columns. The grant is
+`aivan-hud/db/migration/202611150100_authz_purge_grants.rb`, so `rake db:migrate`
+in that project has to have run before the CronJob's first pass succeeds.
+`aivan-hud/k8s/values.yaml` has `purge.enabled` and `purge.suspended` if the
+schedule needs to wait for the migration.
+
+This used to be a CronJob in `deploy/k8s.yaml` running as `aivan_migrations`,
+the schema owner. `aivan-hud/doc/schema-ownership.md` §3 says that role is
+"never a running pod"; the move is what makes that true.
+
+---
+
 ## 5. Rotate the database credential
 
 The gate's credential is `aivan_authz`, created by `deploy/roles.sql`. The authz

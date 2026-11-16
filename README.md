@@ -24,6 +24,25 @@ administration.
 containing only the gate; `TestGateBinaryHasNoAdminCommands` and
 `TestDockerfileBuildsOnlyTheGate` are what keep it that way.
 
+## Shipping it
+
+| Task | What it does |
+|---|---|
+| `rake push` | builds the image, pushes it, and confirms the registry's config digest is the one just built |
+| `rake deploy` | `push`, then applies `deploy/k8s.yaml`, rolls the Deployment, and verifies the running bytes |
+| `rake deploy:apply` | applies the manifest only, for a policy or env change (`DRY_RUN=1` validates) |
+| `rake deploy:verify` | read-only: the ready pod runs the image the registry serves, and that image was built from `HEAD` |
+
+`AIVAN_NS` names the namespace (default `hermes-agent`); `IMAGE` overrides the
+tag. `deploy` refuses to apply when a Secret the manifest mounts is absent,
+because the pod would sit pending on the mount. The purge CronJob is not in this
+manifest; it lives in aivan-hud's chart with the schema it reads.
+
+`deploy:verify` exists because the deployed image was once seven commits behind
+the tree and nothing in the build noticed (`doc/pentest-evidence/a.md` PA1). It
+reads the revision out of the running binary's own build stamp, so a tag that
+moved underneath a pod is caught rather than assumed.
+
 ## Minting a code, and the square a phone scans
 
 `authz-admin enroll-new` prints a code once. At a terminal it also draws a QR

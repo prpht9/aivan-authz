@@ -15,9 +15,13 @@ import (
 	"github.com/chris/aivan-authz/test/harness"
 )
 
-// The purge runs as the operator credential, which is what the CronJob and the
-// admin binary use. setup's pool is already that credential, so these tests use
-// f.op directly.
+// The break-glass purge runs as the operator credential, which is what the
+// admin binary uses. setup's pool is already that credential, so these tests
+// use f.op directly.
+//
+// The scheduled purge is a different credential: hud's chart runs the CronJob
+// as aivan_core, and TestPurgeRunsAsTheScheduledCredential is what proves that
+// role holds exactly what the two statements need.
 
 // insertNonce writes a nonce row directly, with an expiry relative to the
 // database's clock, and returns its hash. The test never presents these nonces:
@@ -167,8 +171,9 @@ func TestPurgeGrace(t *testing.T) {
 // gate's binary, and the scheduled pass runs as a credential that is not in the
 // pod at all.
 //
-// Two assertions: the operator role the CronJob uses can run both statements,
-// and the gate's binary does not contain the admin command that would run them.
+// Two assertions: the operator role the break-glass command uses can run both
+// statements, and the gate's credential holds no authority the split keeps out
+// of the pod.
 func TestPurgeRunsOutsideTheGate(t *testing.T) {
 	f := setup(t)
 
@@ -191,5 +196,59 @@ func TestPurgeRunsOutsideTheGate(t *testing.T) {
 	}
 	if canRevoke {
 		t.Error("the gate's credential can execute authz.revoke_device")
+	}
+}
+
+// TestPurgeRunsAsTheScheduledCredential pins what the CronJob's role may do.
+//
+// The scheduled pass is hud's chart, running as aivan_core with hud's own
+// DATABASE_URL — not the schema owner, and not the gate. The grant is in
+// aivan-hud/db/migration/202611150100_authz_purge_grants.rb, and this test is
+// what notices if that migration and these statements drift apart.
+//
+// Two things are asserted. The role can run both statements as written: DELETE
+// alone is not enough, because PostgreSQL requires SELECT on every column a
+// WHERE expression reads, so the grant carries a column-level SELECT on the
+// predicate columns. And it holds nothing wider: no SELECT on the rows
+// themselves, so a compromised hud pod cannot enumerate live sessions or
+// unspent nonces.
+func TestPurgeRunsAsTheScheduledCredential(t *testing.T) {
+	f := setup(t)
+
+	// The application credential, which is what hud's chart mounts.
+	app := harness.Pool(t, f.core)
+
+	for name, sql := range map[string]string{
+		"nonces":   console.PurgeNonceSQL,
+		"sessions": console.PurgeSessionsSQL,
+	} {
+		if _, err := app.Exec(context.Background(), sql); err != nil {
+			t.Errorf("the scheduled credential cannot purge %s: %v", name, err)
+		}
+	}
+
+	// The predicate columns must be readable, or the statements above could not
+	// have run. The identity columns must not be: a purge job has no use for
+	// them, and an attacker holding this role would.
+	for _, c := range []struct {
+		table  string
+		column string
+		want   bool
+	}{
+		{"authz.nonces", "expires_at", true},
+		{"authz.sessions", "idle_expires_at", true},
+		{"authz.sessions", "absolute_expires_at", true},
+		{"authz.nonces", "nonce_hash", false},
+		{"authz.sessions", "token_hash", false},
+	} {
+		var has bool
+		if err := app.QueryRow(context.Background(),
+			`select has_column_privilege(current_user, $1, $2, 'SELECT')`,
+			c.table, c.column).Scan(&has); err != nil {
+			t.Fatalf("measure %s.%s: %v", c.table, c.column, err)
+		}
+		if has != c.want {
+			t.Errorf("%s.%s SELECT = %v, want %v", c.table, c.column, has, c.want)
+		}
 	}
 }
