@@ -338,12 +338,28 @@ func usernameOf(userID int64) string {
 	}
 }
 
-// revoke marks a device revoked.
+// revoke marks a device revoked. Both columns move together: the biconditional
+// CHECK rejects a revocation that only stamps revoked_at, so a test that wrote
+// one column would be testing a state the schema does not allow.
 func (e *env) revoke(d device) {
 	e.t.Helper()
 	harness.Exec(e.t, e.super, fmt.Sprintf(
-		`update authz.devices set revoked_at = now() where id = '%s'`,
+		`update authz.devices set state = 'revoked', revoked_at = now() where id = '%s'`,
 		proof.FormatDeviceID(d.ID)))
+}
+
+// setState moves a device row to another state, keeping the biconditional
+// satisfied. It is how a test produces the `pending` row component 4 will write:
+// nothing in the gate creates one, so the owner does.
+func (e *env) setState(d device, state string) {
+	e.t.Helper()
+	revoked := "null"
+	if state == "revoked" {
+		revoked = "now()"
+	}
+	harness.Exec(e.t, e.super, fmt.Sprintf(
+		`update authz.devices set state = '%s', revoked_at = %s where id = '%s'`,
+		state, revoked, proof.FormatDeviceID(d.ID)))
 }
 
 // setActive sets public.users.active for userID.

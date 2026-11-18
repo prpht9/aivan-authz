@@ -250,19 +250,23 @@ func TestEnrollMintsEveryClaimableKind(t *testing.T) {
 	}
 }
 
-// TestEnrollRefusesAKindTheColumnDoesNotHave: the check constraint has three
-// kinds, and a fourth is a typo the console catches before a constraint does.
+// TestEnrollRefusesAKindTheColumnDoesNotHave: a kind the CHECK does not have is
+// a typo the console catches before the constraint does, and the message names
+// every kind that would have worked. The list is ClaimableKinds, so widening it
+// cannot leave the message behind.
 func TestEnrollRefusesAKindTheColumnDoesNotHave(t *testing.T) {
 	f := setup(t)
 	clearDevices(t, f)
 	_, err := console.Enroll(context.Background(), f.op, console.EnrollOptions{
-		Username: "alice", Origin: "aivan-hud.home.arpa", Kind: "watch",
+		Username: "alice", Origin: "aivan-hud.home.arpa", Kind: "fridge",
 	}, hudHosts, "operator")
 	if err == nil {
-		t.Fatal("watch was accepted, but authz.devices has no such kind")
+		t.Fatal("fridge was accepted, but authz.devices has no such kind")
 	}
-	if !strings.Contains(err.Error(), "browser, phone or tablet") {
-		t.Errorf("error %q does not name the kinds", err)
+	for _, kind := range console.ClaimableKinds {
+		if !strings.Contains(err.Error(), kind) {
+			t.Errorf("error %q does not name %q", err, kind)
+		}
 	}
 }
 

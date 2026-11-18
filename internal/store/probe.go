@@ -254,8 +254,11 @@ var presenceAssertions = []assertion{
 	{
 		what: "can read authz.devices",
 		run: func(ctx context.Context, tx pgx.Tx) error {
+			// state is in the list because every liveness check reads it: a
+			// missing column grant would otherwise fail the first request
+			// rather than the start.
 			_, err := tx.Exec(ctx, `
-select id, user_id, origin, kind, public_key, alg, created_at, last_seen_at, revoked_at
+select id, user_id, origin, kind, state, public_key, alg, created_at, last_seen_at, revoked_at
   from authz.devices limit 1`)
 			return err
 		},

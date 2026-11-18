@@ -19,12 +19,44 @@ const (
 	ClassAuthenticated Class = "authenticated"
 	// ClassAdmin needs the same plus the admin role.
 	ClassAdmin Class = "admin"
+	// ClassConfidential means "only some device kinds may reach it": it
+	// requires a valid device *and* that the device's kind is one the route
+	// names, so a route that must not be reachable from a kitchen panel says
+	// `kinds: [phone, tablet]` and a browser is refused there.
+	//
+	// The word is shared with the *level* `confidential` in
+	// doc/spec-authorization.md §5.2, which means rank 4 and nothing else. They
+	// are different things: a class is a routing requirement, a level is a rank
+	// a grant carries. This class is the routing half, and it is the only place
+	// in this package the word appears.
+	ClassConfidential Class = "confidential"
 	// ClassEnrollment is the claim's own class: no user proof, only a body
 	// carrying a signed pending-enrollment claim. It is valid on one prefix
 	// (EnrollmentPrefix) and nowhere else, because a class that accepts an
 	// unauthenticated body is a hole everywhere it is not the point.
 	ClassEnrollment Class = "enrollment"
 )
+
+// DeviceKinds is the closed vocabulary of device kinds, and the only list of
+// them in this service: the schema's CHECK names exactly these
+// (aivan-hud/db/migration/202611170100_authz_device_state.rb), the console's
+// claimable set and the claim's accepted set are both checked against it by a
+// unit test, and a route's `kinds` is validated here.
+//
+// A fourth copy of the list is how a kind the schema allows and the claim
+// refuses becomes a dead end that looks like a typo
+// (doc/plan-access-levels.md:277-286).
+var DeviceKinds = []string{"phone", "tablet", "browser", "panel", "tv"}
+
+// KnownDeviceKind reports whether k is a kind a device row may have.
+func KnownDeviceKind(k string) bool {
+	for _, known := range DeviceKinds {
+		if k == known {
+			return true
+		}
+	}
+	return false
+}
 
 // EnrollmentPrefix is the one path an enrollment class may be declared on. It
 // matches the gate's own router, which is the only place the claim is served
@@ -34,17 +66,20 @@ const EnrollmentPrefix = "/__aivan/enroll"
 // Known reports whether c is a class this phase understands.
 func Known(c Class) bool {
 	switch c {
-	case ClassPublic, ClassAuthenticated, ClassAdmin, ClassEnrollment:
+	case ClassPublic, ClassAuthenticated, ClassAdmin, ClassConfidential, ClassEnrollment:
 		return true
 	default:
 		return false
 	}
 }
 
-// Route is one prefix and the class under it.
+// Route is one prefix and the class under it, plus the device kinds the route
+// accepts. Kinds is empty for every class but confidential: the others have no
+// identity whose kind could be checked, or are meant to accept any device.
 type Route struct {
 	Prefix string
 	Class  Class
+	Kinds  []string
 }
 
 // Host is one host's routes in match order: longest prefix first, so the first
@@ -74,6 +109,11 @@ type builtHost struct {
 type Match struct {
 	Class Class
 	Route string // the prefix that matched, or "" when the class defaulted
+	// Kinds is the matched route's device-kind list, and is empty whenever the
+	// class does not require one. It is empty for a defaulted match too: a path
+	// with no policy entry has no kinds to require, and inventing a list there
+	// would refuse a device on a route nobody configured.
+	Kinds []string
 	// Defaulted is true when no prefix matched. The caller logs it, because a
 	// path reaching the gate with no policy entry is a routing mistake.
 	Defaulted bool
@@ -96,6 +136,14 @@ var (
 	ErrEnrollmentPrefix = errors.New("policy: enrollment class is only valid on " + EnrollmentPrefix)
 	// ErrScheme means a host is configured with a scheme other than https.
 	ErrScheme = errors.New("policy: scheme must be https")
+	// ErrUnknownKind means a route names a device kind outside DeviceKinds. A
+	// typo there would otherwise make a route that quietly accepts nothing.
+	ErrUnknownKind = errors.New("policy: unknown device kind")
+	// ErrKindsOnClass means `kinds` was put where it cannot be enforced: on
+	// `public` or `enrollment` (neither has an identity to check), or on
+	// `confidential` with an empty list (which would be `authenticated` under a
+	// second name).
+	ErrKindsOnClass = errors.New("policy: kinds is not allowed on this class")
 )
 
 // refusal carries an operator-facing message while still matching its
@@ -154,6 +202,11 @@ func New(hosts map[string]Host) (*Table, error) {
 					"policy host %q declares class %q on %q, which is not %s",
 					host, r.Class, r.Prefix, EnrollmentPrefix)
 			}
+			kinds, err := normaliseKinds(host, r)
+			if err != nil {
+				return nil, err
+			}
+			r.Kinds = kinds
 			seen[r.Prefix] = true
 			routes = append(routes, r)
 		}
@@ -164,6 +217,64 @@ func New(hosts map[string]Host) (*Table, error) {
 		t.hosts[host] = &builtHost{scheme: h.Scheme, routes: routes}
 	}
 	return t, nil
+}
+
+// normaliseKinds validates one route's `kinds` against its class, and returns
+// the list to keep. The rules are the startup refusals the plan names
+// (doc/plan-gate-device-kinds.md step 3), each with its own sentinel:
+//
+//   - a value outside DeviceKinds is ErrUnknownKind, so a typo stops the gate
+//     rather than producing a route that accepts nothing;
+//   - `kinds` on `public` or `enrollment` is ErrKindsOnClass: neither has an
+//     identity whose kind could be checked, so the field would be an
+//     expectation nothing enforces;
+//   - `confidential` with an empty list is ErrKindsOnClass: it would be
+//     `authenticated` under a second name.
+//
+// Any other class keeps an empty list, and a route that names kinds there is
+// refused rather than silently ignored.
+func normaliseKinds(host string, r Route) ([]string, error) {
+	seen := make(map[string]bool, len(r.Kinds))
+	kinds := make([]string, 0, len(r.Kinds))
+	for _, raw := range r.Kinds {
+		k := strings.ToLower(strings.TrimSpace(raw))
+		if !KnownDeviceKind(k) {
+			return nil, failf(ErrUnknownKind,
+				"policy host %q route %q names device kind %q; the kinds are %s",
+				host, r.Prefix, raw, strings.Join(DeviceKinds, ", "))
+		}
+		if seen[k] {
+			return nil, failf(ErrUnknownKind, "policy host %q route %q names device kind %q twice",
+				host, r.Prefix, k)
+		}
+		seen[k] = true
+		kinds = append(kinds, k)
+	}
+
+	switch r.Class {
+	case ClassConfidential:
+		if len(kinds) == 0 {
+			return nil, failf(ErrKindsOnClass,
+				"policy host %q route %q is class %q with no kinds; "+
+					"a confidential route with no kinds is an authenticated route under another name",
+				host, r.Prefix, r.Class)
+		}
+	case ClassPublic, ClassEnrollment:
+		if len(kinds) != 0 {
+			return nil, failf(ErrKindsOnClass,
+				"policy host %q route %q is class %q, which has no device identity to check; "+
+					"kinds belongs on %q",
+				host, r.Prefix, r.Class, ClassConfidential)
+		}
+	default:
+		if len(kinds) != 0 {
+			return nil, failf(ErrKindsOnClass,
+				"policy host %q route %q is class %q and names kinds; "+
+					"only %q requires them",
+				host, r.Prefix, r.Class, ClassConfidential)
+		}
+	}
+	return kinds, nil
 }
 
 // Hosts returns the configured host names.
@@ -206,7 +317,7 @@ func (t *Table) Match(host, target string) (Match, error) {
 
 	for _, r := range h.routes {
 		if r.Prefix == "/" || path == r.Prefix || strings.HasPrefix(path, r.Prefix+"/") {
-			return Match{Class: r.Class, Route: r.Prefix}, nil
+			return Match{Class: r.Class, Route: r.Prefix, Kinds: r.Kinds}, nil
 		}
 	}
 	return Match{Class: ClassAuthenticated, Defaulted: true}, nil

@@ -150,12 +150,12 @@ func (g *Gate) verifyServiceSignature(w http.ResponseWriter, r *http.Request, id
 // bytes that could describe anything.
 func (g *Gate) verifyApprovalSignature(w http.ResponseWriter, r *http.Request, deviceID, approvalID string, body, signature []byte) {
 	var publicKey []byte
-	var alg, origin string
+	var alg, origin, state string
 	var revoked pgtype.Timestamptz
 	var userID int64
 
 	err := g.pool.QueryRow(r.Context(), store.StmtDeviceKey, deviceID).
-		Scan(&publicKey, &alg, &origin, &revoked, &userID)
+		Scan(&publicKey, &alg, &origin, &state, &revoked, &userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		g.signatureRefused(w, r, audit.Unknown)
 		return
@@ -166,6 +166,12 @@ func (g *Gate) verifyApprovalSignature(w http.ResponseWriter, r *http.Request, d
 	}
 	if revoked.Valid {
 		g.signatureRefused(w, r, audit.DeviceRevoked)
+		return
+	}
+	// A pending device is not a signer: nothing it signs has authority yet, so
+	// accepting the signature would let it spend a decision it may not make.
+	if state != deviceStateLive {
+		g.signatureRefused(w, r, audit.DevicePending)
 		return
 	}
 	if err := proof.Verify(alg, publicKey, body, signature); err != nil {

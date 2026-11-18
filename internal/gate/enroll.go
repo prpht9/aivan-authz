@@ -31,12 +31,24 @@ const (
 )
 
 // enrollKinds is the set of kinds a claim may name. The column allows exactly
-// these, and each one has a claim path: a browser through the page, a phone or
-// tablet through the same JSON body. The kind a device actually receives comes
-// from the pending record, never from the request (S11); the request's kind has
-// to match that record, so a browser cannot spend a phone's code and a phone
-// cannot spend a browser's.
-var enrollKinds = map[string]bool{"browser": true, "phone": true, "tablet": true}
+// these, and each one has a claim path: a browser through the page, anything else
+// through the same JSON body. The kind a device actually receives comes from the
+// pending record, never from the request (S11); the request's kind has to match
+// that record, so a browser cannot spend a phone's code and a panel cannot spend
+// a phone's.
+//
+// It is derived from policy.DeviceKinds rather than written out, so the claim
+// cannot fall behind the schema's CHECK. It stays a separate set from the
+// console's ClaimableKinds because the two answer different questions — what a
+// claim may *name*, what a mint may *produce* — and a unit test asserts both are
+// drawn from policy.DeviceKinds.
+var enrollKinds = func() map[string]bool {
+	out := make(map[string]bool, len(policy.DeviceKinds))
+	for _, kind := range policy.DeviceKinds {
+		out[kind] = true
+	}
+	return out
+}()
 
 // enrollDenialBody is the one 403 body. S9, S10 and S11 are indistinguishable to
 // the client in status, body and headers, so a wrong code, an expired record, a
@@ -212,7 +224,7 @@ func (g *Gate) claimEnrollment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !enrollKinds[req.Kind] {
-		g.enrollMalformed(w, r, f, "kind is not phone, tablet or browser")
+		g.enrollMalformed(w, r, f, "kind is not one of "+strings.Join(policy.DeviceKinds, ", "))
 		return
 	}
 	if !proof.Supported(req.Alg) {

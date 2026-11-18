@@ -2,6 +2,7 @@ package policy
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -179,5 +180,105 @@ func TestScheme(t *testing.T) {
 	}
 	if _, ok := tbl.Scheme("nope.example"); ok {
 		t.Fatal("Scheme reported a host that is not configured")
+	}
+}
+
+// TestKindsAreValidatedAtStartup is the pair of refusals step 3 adds. Each has
+// its own sentinel so the message and errors.Is agree: a typo in a kind stops
+// the gate rather than making a route that quietly accepts nothing, and `kinds`
+// where it cannot be enforced stops it rather than looking restrictive.
+func TestKindsAreValidatedAtStartup(t *testing.T) {
+	cases := []struct {
+		name string
+		host Host
+		want error
+	}{
+		{"a confidential route with kinds", Host{Routes: []Route{
+			{Prefix: "/", Class: ClassConfidential, Kinds: []string{"phone"}}}}, nil},
+		{"a kind outside the vocabulary", Host{Routes: []Route{
+			{Prefix: "/", Class: ClassConfidential, Kinds: []string{"panelx"}}}}, ErrUnknownKind},
+		{"a confidential route with no kinds", Host{Routes: []Route{
+			{Prefix: "/", Class: ClassConfidential}}}, ErrKindsOnClass},
+		{"kinds on public", Host{Routes: []Route{
+			{Prefix: "/", Class: ClassPublic, Kinds: []string{"phone"}}}}, ErrKindsOnClass},
+		{"kinds on enrollment", Host{Routes: []Route{
+			{Prefix: EnrollmentPrefix, Class: ClassEnrollment, Kinds: []string{"phone"}}}}, ErrKindsOnClass},
+		{"kinds on authenticated", Host{Routes: []Route{
+			{Prefix: "/", Class: ClassAuthenticated, Kinds: []string{"phone"}}}}, ErrKindsOnClass},
+		{"kinds on admin", Host{Routes: []Route{
+			{Prefix: "/admin", Class: ClassAdmin, Kinds: []string{"phone"}}}}, ErrKindsOnClass},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(map[string]Host{"hud.example": tc.host})
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("New: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestMatchCarriesTheRoutesKinds: the kinds reach the decision through Match, so
+// a caller cannot see the class and miss the kinds.
+func TestMatchCarriesTheRoutesKinds(t *testing.T) {
+	tbl, err := New(map[string]Host{
+		"hud.example": {
+			Routes: []Route{
+				{Prefix: "/", Class: ClassAuthenticated},
+				{Prefix: "/vault", Class: ClassConfidential, Kinds: []string{"phone", "tablet"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	m, err := tbl.Match("hud.example", "/vault/notes")
+	if err != nil {
+		t.Fatalf("Match: %v", err)
+	}
+	if m.Class != ClassConfidential {
+		t.Fatalf("class = %s, want confidential", m.Class)
+	}
+	if got := strings.Join(m.Kinds, ","); got != "phone,tablet" {
+		t.Fatalf("kinds = %q, want phone,tablet", got)
+	}
+
+	// The defaulted match and an ordinary route carry none, so no device is
+	// refused on a route that never asked for one.
+	for _, target := range []string{"/", "/elsewhere"} {
+		m, err = tbl.Match("hud.example", target)
+		if err != nil {
+			t.Fatalf("Match(%q): %v", target, err)
+		}
+		if len(m.Kinds) != 0 {
+			t.Errorf("Match(%q) carried kinds %v on a route that names none", target, m.Kinds)
+		}
+	}
+}
+
+// TestDeviceKindsAreTheSchemaVocabulary pins the list the migration's CHECK
+// names. A fourth copy of the vocabulary is how a kind the schema allows and the
+// claim refuses becomes a dead end.
+func TestDeviceKindsAreTheSchemaVocabulary(t *testing.T) {
+	want := "phone,tablet,browser,panel,tv"
+	if got := strings.Join(DeviceKinds, ","); got != want {
+		t.Fatalf("DeviceKinds = %q, want %q", got, want)
+	}
+	for _, k := range DeviceKinds {
+		if !KnownDeviceKind(k) {
+			t.Errorf("KnownDeviceKind(%q) = false", k)
+		}
+	}
+	for _, k := range []string{"", "watch", "fridge", "Phone"} {
+		if KnownDeviceKind(k) {
+			t.Errorf("KnownDeviceKind(%q) = true", k)
+		}
 	}
 }

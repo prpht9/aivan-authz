@@ -23,12 +23,19 @@ import (
 )
 
 // Device is one row of list-devices.
+//
+// State is the fact and Revoked is the timestamp of one transition into
+// "revoked". A pending device is listed, and the STATE column is what says it
+// cannot act yet: a device that exists but is waiting for approval is exactly
+// what an operator needs to see, and hiding it would make a stuck enrollment
+// look like a lost one.
 type Device struct {
 	ID       string
 	Origin   string
 	Kind     string
 	Name     string
 	Alg      string
+	State    string
 	Created  time.Time
 	LastSeen *time.Time
 	Revoked  *time.Time
@@ -40,7 +47,7 @@ type Device struct {
 // a table grant: select * would fail, and it should.
 func ListDevices(ctx context.Context, pool *pgxpool.Pool, username string) ([]Device, error) {
 	rows, err := pool.Query(ctx, `
-select d.id::text, d.origin, d.kind, d.name, d.alg,
+select d.id::text, d.origin, d.kind, d.name, d.alg, d.state,
        d.created_at, d.last_seen_at, d.revoked_at
   from authz.devices d
   join public.users u on u.id = d.user_id
@@ -54,7 +61,7 @@ select d.id::text, d.origin, d.kind, d.name, d.alg,
 	var out []Device
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(&d.ID, &d.Origin, &d.Kind, &d.Name, &d.Alg,
+		if err := rows.Scan(&d.ID, &d.Origin, &d.Kind, &d.Name, &d.Alg, &d.State,
 			&d.Created, &d.LastSeen, &d.Revoked); err != nil {
 			return nil, err
 		}
@@ -67,12 +74,12 @@ select d.id::text, d.origin, d.kind, d.name, d.alg,
 // local zone of the machine running the command, and an absent time is "-".
 func WriteDevices(w io.Writer, devices []Device) error {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ID\tORIGIN\tKIND\tNAME\tALG\tCREATED\tLAST_SEEN\tREVOKED"); err != nil {
+	if _, err := fmt.Fprintln(tw, "ID\tORIGIN\tKIND\tNAME\tALG\tSTATE\tCREATED\tLAST_SEEN\tREVOKED"); err != nil {
 		return err
 	}
 	for _, d := range devices {
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			d.ID, d.Origin, d.Kind, d.Name, d.Alg,
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			d.ID, d.Origin, d.Kind, d.Name, d.Alg, d.State,
 			stamp(&d.Created), stamp(d.LastSeen), stamp(d.Revoked)); err != nil {
 			return err
 		}

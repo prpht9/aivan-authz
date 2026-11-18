@@ -26,17 +26,24 @@ const (
 	BadSignature     Reason = "bad_signature"
 	AlgUnsupported   Reason = "alg_unsupported"
 	RoleInsufficient Reason = "role_insufficient"
-	Username         Reason = "username_unrepresentable"
-	HostUnknown      Reason = "host_unknown"
-	ClassDefaulted   Reason = "class_defaulted"
-	PlainHTTP        Reason = "plain_http"
-	BodyTooLarge     Reason = "body_too_large"
-	Database         Reason = "database_error"
-	RateLimited      Reason = "rate_limited"
-	NonceTableFull   Reason = "nonce_table_full"
-	MethodNotAllowed Reason = "method_not_allowed"
-	ForwardedMissing Reason = "forwarded_missing"
-	BadRequest       Reason = "bad_request"
+	// DevicePending is a device row that is waiting for approval. It is not
+	// revoked and not a bad key, so it gets its own reason: an operator reading
+	// a 401 needs to tell an unapproved device from a broken one.
+	DevicePending Reason = "device_pending"
+	// DeviceKindInsufficient is a valid device whose kind the route does not
+	// accept. A 403, not a 401: the proof was good and the authority was not.
+	DeviceKindInsufficient Reason = "device_kind_insufficient"
+	Username               Reason = "username_unrepresentable"
+	HostUnknown            Reason = "host_unknown"
+	ClassDefaulted         Reason = "class_defaulted"
+	PlainHTTP              Reason = "plain_http"
+	BodyTooLarge           Reason = "body_too_large"
+	Database               Reason = "database_error"
+	RateLimited            Reason = "rate_limited"
+	NonceTableFull         Reason = "nonce_table_full"
+	MethodNotAllowed       Reason = "method_not_allowed"
+	ForwardedMissing       Reason = "forwarded_missing"
+	BadRequest             Reason = "bad_request"
 
 	// Session reasons. An expired, idle-timed-out and unknown cookie are one
 	// reason on purpose: one statement cannot tell them apart, and the client
@@ -67,7 +74,8 @@ const (
 var all = []Reason{
 	NoProof, MalformedProof, NonceUnknown, NonceExpired, Replay,
 	TimestampSkewed, TimestampBefore, OriginMismatch, DeviceRevoked, UserInactive,
-	BadSignature, AlgUnsupported, RoleInsufficient, Username, HostUnknown,
+	BadSignature, AlgUnsupported, RoleInsufficient, DevicePending,
+	DeviceKindInsufficient, Username, HostUnknown,
 	ClassDefaulted, PlainHTTP, BodyTooLarge, Database, RateLimited,
 	NonceTableFull, MethodNotAllowed, ForwardedMissing, BadRequest,
 	SessionInvalid, SessionRefused, Logout, CSRFMissing, CSRFSite, PublicRoute,

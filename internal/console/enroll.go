@@ -23,10 +23,16 @@ import (
 const EnrollTTL = 15 * time.Minute
 
 // ClaimableKinds is the set of device kinds a minted record can produce. Every
-// kind here has a claim path: the gate's claim accepts all three, and the one
+// kind here has a claim path: the gate's claim accepts all of them, and the one
 // page serves a browser. The column allows exactly these, so a kind outside the
 // list is a typo rather than a future feature.
-var ClaimableKinds = []string{KindBrowser, "phone", "tablet"}
+//
+// It is written out rather than taken from policy.DeviceKinds because it answers
+// a different question — what a *mint* may produce, not what the schema allows —
+// and the two must not be one variable: a kind could be legal on an existing row
+// while no longer being mintable. A unit test asserts every entry is a
+// policy.DeviceKind, so a fourth copy of the vocabulary cannot drift.
+var ClaimableKinds = []string{KindBrowser, "phone", "tablet", "panel", "tv"}
 
 // KindBrowser is the kind a browser page claims. A phone and a tablet claim the
 // same endpoint with the same body; only the pending record's kind differs, and
@@ -246,18 +252,25 @@ func operatorName() string {
 func OperatorName() string { return operatorName() }
 
 // normaliseKind applies the default and refuses a kind outside ClaimableKinds,
-// so a typo is a console error rather than a constraint violation at claim
-// time.
+// so a typo is a console error rather than a constraint violation at claim time.
+//
+// It reads ClaimableKinds rather than repeating the list in a switch. That
+// switch was a second allow-list with its own message, which is how a kind the
+// schema allows and the mint refuses becomes a dead end that reads as a typo
+// (doc/plan-access-levels.md:277-286). The message is built from the same slice,
+// so it cannot fall behind it either.
 func normaliseKind(raw string, out *string) error {
-	switch raw {
-	case "":
+	if raw == "" {
 		*out = KindBrowser
-	case "browser", "phone", "tablet":
-		*out = raw
-	default:
-		return fmt.Errorf("--kind must be browser, phone or tablet, not %q", raw)
+		return nil
 	}
-	return nil
+	for _, kind := range ClaimableKinds {
+		if raw == kind {
+			*out = raw
+			return nil
+		}
+	}
+	return fmt.Errorf("--kind must be %s, not %q", strings.Join(ClaimableKinds, ", "), raw)
 }
 
 func contains(list []string, want string) bool {

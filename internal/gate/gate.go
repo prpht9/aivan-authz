@@ -77,17 +77,21 @@ const (
 	ReasonBadSignature     = audit.BadSignature
 	ReasonAlgUnsupported   = audit.AlgUnsupported
 	ReasonRoleInsufficient = audit.RoleInsufficient
-	ReasonUsername         = audit.Username
-	ReasonHostUnknown      = audit.HostUnknown
-	ReasonClassDefaulted   = audit.ClassDefaulted
-	ReasonPlainHTTP        = audit.PlainHTTP
-	ReasonBodyTooLarge     = audit.BodyTooLarge
-	ReasonDatabase         = audit.Database
-	ReasonRateLimited      = audit.RateLimited
-	ReasonNonceTableFull   = audit.NonceTableFull
-	ReasonMethodNotAllowed = audit.MethodNotAllowed
-	ReasonForwardedMissing = audit.ForwardedMissing
-	ReasonBadRequest       = audit.BadRequest
+	ReasonDevicePending    = audit.DevicePending
+	// ReasonDeviceKindInsufficient is a valid device on a route that does not
+	// accept its kind. A 403, because the proof was good.
+	ReasonDeviceKindInsufficient = audit.DeviceKindInsufficient
+	ReasonUsername               = audit.Username
+	ReasonHostUnknown            = audit.HostUnknown
+	ReasonClassDefaulted         = audit.ClassDefaulted
+	ReasonPlainHTTP              = audit.PlainHTTP
+	ReasonBodyTooLarge           = audit.BodyTooLarge
+	ReasonDatabase               = audit.Database
+	ReasonRateLimited            = audit.RateLimited
+	ReasonNonceTableFull         = audit.NonceTableFull
+	ReasonMethodNotAllowed       = audit.MethodNotAllowed
+	ReasonForwardedMissing       = audit.ForwardedMissing
+	ReasonBadRequest             = audit.BadRequest
 
 	// Session reasons. An expired, idle-timed-out and unknown cookie are one
 	// reason on purpose: one statement cannot tell them apart, and the client
@@ -129,6 +133,23 @@ func (d *DenialError) Error() string { return "denied: " + string(d.Reason) }
 // returning a sentinel, so a missing check is a compile-time problem.
 func deny(r Reason) error { return &DenialError{Reason: r} }
 
+// deviceStateLive is the state a device row must have for any authority at all.
+// The other two are `pending` (waiting for approval) and `revoked`; the SQL and
+// the checks compare against this name rather than spelling the literal in each
+// of the four places, so a rename cannot leave one path accepting the others.
+const deviceStateLive = "live"
+
+// occupantlessKinds are the kinds that carry no person at the device: a screen
+// in a hallway or on a wall has no sign-in surface, so a proof for one reaches
+// the application as a device and not as its owner
+// (doc/spec-authorization.md §6.1).
+//
+// This is a stand-in for `authz.devices.shared`, which component 3 adds. When it
+// lands the predicate becomes the row's `shared` column and this set goes away:
+// a shared tablet is a real case, and a kind that happens to be shared today is
+// not the same fact.
+var occupantlessKinds = map[string]bool{"panel": true, "tv": true}
+
 // identity is what a successful decision produces.
 type identity struct {
 	UserID     int64
@@ -138,6 +159,36 @@ type identity struct {
 	Roles      []string
 	Proof      string
 }
+
+// newIdentity builds the identity for one verified device row. It is the one
+// place the occupantless kinds are applied, so the proof path and the session
+// path cannot disagree about what a panel reaches the application as.
+//
+// An occupantless kind carries no person. The row's owner is who enrolled it,
+// not who is standing at it, and writing their id, name or roles would be
+// exactly the ownership/occupancy confusion spec §5.4 separates: the
+// application would key on a person who is not there.
+func newIdentity(deviceID, kind string, userID int64, username string, roles []string, proof string) *identity {
+	id := &identity{
+		UserID:     userID,
+		Username:   username,
+		DeviceID:   deviceID,
+		DeviceKind: kind,
+		Roles:      roles,
+		Proof:      proof,
+	}
+	if occupantlessKinds[kind] {
+		id.UserID = 0
+		id.Username = ""
+		id.Roles = nil
+	}
+	return id
+}
+
+// hasOccupant reports whether a device of this kind is a person's own. It is the
+// negation of occupantlessKinds, named the other way round because that is how
+// the callers read: a username has to be a header value only when there is one.
+func hasOccupant(kind string) bool { return !occupantlessKinds[kind] }
 
 // HasRole reports membership. Roles arrive sorted from the database, so a
 // linear scan over a short slice is faster than a map and cannot outlive its
@@ -154,11 +205,17 @@ func (id *identity) HasRole(role string) bool {
 	return false
 }
 
-// CheckClass decides whether id may reach a route of class c. A nil identity
-// has no authority, which keeps the function total for the public class where
-// no identity exists.
-func CheckClass(id *identity, c policy.Class) error {
-	switch c {
+// CheckClass decides whether id may reach the route the policy matched. A nil
+// identity has no authority, which keeps the function total for the public
+// class where no identity exists.
+//
+// It takes the match rather than the class because a route's requirement is not
+// only its class: a `confidential` route also names the device kinds it accepts,
+// and a caller that passed only the class would compile while ignoring them.
+// That is why the parameter changed rather than a second function appearing
+// beside this one.
+func CheckClass(id *identity, m policy.Match) error {
+	switch m.Class {
 	case policy.ClassPublic:
 		// No proof required, and the caller sets no headers. A public request
 		// never reaches the identity path at all, but this keeps the function
@@ -170,8 +227,23 @@ func CheckClass(id *identity, c policy.Class) error {
 		}
 		return nil
 	case policy.ClassAdmin:
+		// The admin class keeps its kind check *inside* its own branch, so a
+		// route declared `admin` behaves exactly as it did: /admin is not
+		// narrowed to one kind here, because that would lock an operator out of
+		// their own console (doc/plan-device-tiers-and-reproof.md:254-261).
 		if !id.HasRole("admin") {
 			return deny(ReasonRoleInsufficient)
+		}
+		return nil
+	case policy.ClassConfidential:
+		// The class test comes first, as everywhere else, so a denial names the
+		// reason that actually applies. This class has no role requirement of
+		// its own: any active device may reach it if its kind is listed.
+		if id == nil {
+			return deny(ReasonNoProof)
+		}
+		if !kindAllowed(id.DeviceKind, m.Kinds) {
+			return deny(ReasonDeviceKindInsufficient)
 		}
 		return nil
 	case policy.ClassEnrollment:
@@ -184,6 +256,36 @@ func CheckClass(id *identity, c policy.Class) error {
 		// An unknown class is a policy bug; refusing is the safe direction.
 		return deny(ReasonRoleInsufficient)
 	}
+}
+
+// classRefusalNote is the operator-facing note a class refusal carries. It says
+// the reason's own word, so the log line and the `reason` field cannot describe
+// two different refusals.
+func classRefusalNote(reason Reason) string {
+	switch reason {
+	case ReasonDeviceKindInsufficient:
+		return "device kind insufficient"
+	case ReasonNoProof:
+		return "no proof"
+	default:
+		return "role insufficient"
+	}
+}
+
+// kindAllowed reports whether a device kind is one the route names. An empty
+// list means the route does not restrict kinds, which is every class but
+// confidential; policy.New refuses a confidential route with an empty list, so
+// the permissive branch cannot be reached with one.
+func kindAllowed(kind string, kinds []string) bool {
+	if len(kinds) == 0 {
+		return true
+	}
+	for _, k := range kinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // decodeSignature accepts base64url with or without padding, because the

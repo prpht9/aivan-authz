@@ -217,12 +217,15 @@ func (g *Gate) verifyProof(w http.ResponseWriter, r *http.Request, f forwarded, 
 		return
 	}
 
-	if err := CheckClass(id, m.Class); err != nil {
+	if err := CheckClass(id, m); err != nil {
 		reason, _ := IsDenial(err)
 		if reason == "" {
 			reason = ReasonRoleInsufficient
 		}
-		g.refuse(w, r, http.StatusForbidden, reason, f, "role insufficient")
+		// The note names the reason's own word. One note for every class
+		// refusal said "role insufficient" for a device whose *kind* was
+		// refused, which made the log and the reason disagree.
+		g.refuse(w, r, http.StatusForbidden, reason, f, classRefusalNote(reason))
 		return
 	}
 
@@ -321,6 +324,12 @@ func (g *Gate) proofIdentity(w http.ResponseWriter, r *http.Request, f forwarded
 	case row.revokedAt != nil:
 		g.deny401(w, r, f, ReasonDeviceRevoked)
 		return nil, false
+	case row.state != deviceStateLive:
+		// A pending device proves a key it has, and has no authority yet. The
+		// reason is its own so an operator reading a 401 can tell "waiting for
+		// approval" from "wrong key".
+		g.deny401(w, r, f, ReasonDevicePending)
+		return nil, false
 	case !row.userActive:
 		// Before the signature check on purpose: an inactive user is refused
 		// without spending CPU on a verification.
@@ -339,19 +348,15 @@ func (g *Gate) proofIdentity(w http.ResponseWriter, r *http.Request, f forwarded
 		return nil, false
 	}
 
-	if !safeUsername(row.username) {
+	// Only a device with an occupant carries the owner's name as a header, so
+	// only that case has a name whose representability matters.
+	if hasOccupant(row.kind) && !safeUsername(row.username) {
 		g.refuse(w, r, http.StatusForbidden, ReasonUsername, f, "username cannot be a header value")
 		return nil, false
 	}
 
-	return &identity{
-		UserID:     row.userID,
-		Username:   row.username,
-		DeviceID:   proof.FormatDeviceID(row.id),
-		DeviceKind: row.kind,
-		Roles:      row.roles,
-		Proof:      ProofNonce,
-	}, true
+	return newIdentity(proof.FormatDeviceID(row.id), row.kind, row.userID,
+		row.username, row.roles, ProofNonce), true
 }
 
 // success writes the identity headers and the 200 the application's identity
@@ -361,13 +366,21 @@ func (g *Gate) success(w http.ResponseWriter, r *http.Request, f forwarded, m po
 }
 
 // allow is success with an explicit status, for the mint's 204.
+//
+// The person's headers are written only when there is a person. A shared device
+// with no occupant reaches the application as *anonymous at that device*: the
+// device headers are present and `X-Aivan-User-Id` is **absent**, not "0"
+// (spec §6.1). An absent header is what every application already reads as "no
+// identity"; a zero is a value that would key a foreign key.
 func (g *Gate) allow(w http.ResponseWriter, r *http.Request, f forwarded, m policy.Match, id *identity, status int) {
 	h := w.Header()
-	h.Set(HeaderUserID, strconv.FormatInt(id.UserID, 10))
-	h.Set(HeaderUser, id.Username)
+	if hasOccupant(id.DeviceKind) && id.UserID != 0 {
+		h.Set(HeaderUserID, strconv.FormatInt(id.UserID, 10))
+		h.Set(HeaderUser, id.Username)
+		h.Set(HeaderRoles, joinRoles(id.Roles))
+	}
 	h.Set(HeaderDeviceID, id.DeviceID)
 	h.Set(HeaderDeviceKind, id.DeviceKind)
-	h.Set(HeaderRoles, joinRoles(id.Roles))
 	h.Set(HeaderProof, id.Proof)
 	h.Set("Cache-Control", "no-store")
 
@@ -399,6 +412,7 @@ type verifyRow struct {
 	publicKey  []byte
 	alg        string
 	kind       string
+	state      string
 	revokedAt  *time.Time
 	userID     int64
 	origin     string
@@ -415,7 +429,7 @@ var errNoNonce = errors.New("gate: nonce not consumed")
 func (g *Gate) consume(ctx context.Context, nonceHash [32]byte, deviceID [16]byte) (verifyRow, error) {
 	var row verifyRow
 	err := g.pool.QueryRow(ctx, store.StmtVerify, nonceHash[:], deviceID).Scan(
-		&row.id, &row.publicKey, &row.alg, &row.kind, &row.revokedAt, &row.userID,
+		&row.id, &row.publicKey, &row.alg, &row.kind, &row.state, &row.revokedAt, &row.userID,
 		&row.origin, &row.username, &row.userActive, &row.issuedAt, &row.roles,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

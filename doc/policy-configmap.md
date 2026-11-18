@@ -90,7 +90,7 @@ credential, no per-app database row, and no restart of anything but the gate
 
 ## 3. The policy file
 
-The whole schema is four keys. Unknown keys are refused at startup, so a typo
+The whole schema is five keys. Unknown keys are refused at startup, so a typo
 fails loudly rather than being ignored.
 
 ```yaml
@@ -103,6 +103,8 @@ hosts:
       - { prefix: /__aivan/enroll, class: enrollment }
       - { prefix: /admin,          class: admin }
       - { prefix: /api,            class: authenticated }
+      # A route only some devices may reach. See §3.3.
+      - { prefix: /vault,          class: confidential, kinds: [phone, tablet] }
       - { prefix: /,               class: authenticated }
 ```
 
@@ -131,20 +133,61 @@ plaintext arrival is a `403 plain_http` before any signature work happens.
 
 ### 3.3 `routes`
 
-Each route is a `prefix` and a `class`. The prefix must start with `/`. Declare
-it without a trailing slash: matching is whole-segment (§4.2), and `/api/`
-would not match `/api/x`.
+Each route is a `prefix` and a `class`, plus `kinds` where the class needs one.
+The prefix must start with `/`. Declare it without a trailing slash: matching is
+whole-segment (§4.2), and `/api/` would not match `/api/x`.
 
 | Class | What it requires | Refusal |
 |---|---|---|
 | `public` | nothing; no identity headers are set | — |
 | `authenticated` | any active device of an active user, by proof or by session cookie | `401`, or `302` for an HTML navigation |
 | `admin` | the same, plus membership in the `admin` group | `403 role_insufficient` |
+| `confidential` | the same, **and** a device whose kind is in the route's `kinds` | `403 device_kind_insufficient` (or `401` with no device) |
 | `enrollment` | a body carrying a signed pending-enrollment claim. Valid **only** on `/__aivan/enroll` | `403` |
 
 `enrollment` is pinned to one prefix by construction: the class accepts a body
 with no user proof, so a second use of it would be a second unauthenticated
 write path. Declaring it anywhere else is a refusal to start.
+
+#### `kinds`
+
+`kinds` is a list drawn from the five device kinds the schema has — `phone`,
+`tablet`, `browser`, `panel`, `tv` — and it is **required on `confidential` and
+refused everywhere else.** The reason it is refused elsewhere:
+
+- `public` and `enrollment` have no identity, so there is no kind to check. A
+  `kinds` there would look like a restriction that nothing enforces.
+- `authenticated` and `admin` are meant to accept any device. Putting a list on
+  one would be a second way to spell `confidential`, and `admin` narrowed to one
+  kind locks an operator out of their own console with a change that reads as
+  unrelated.
+- `confidential` **with an empty list** is refused: it would be `authenticated`
+  under a second name.
+
+The word `confidential` is also a *level* in the authorization model, where it
+means rank 4. They are different things and no route class is a level: a class
+says which device may reach a path, a level says how much a grant is worth.
+
+```yaml
+routes:
+  - { prefix: /vault, class: confidential, kinds: [phone, tablet] }
+```
+
+With that route, a browser proof is `403` and the decision log carries
+`reason: device_kind_insufficient`; a phone or tablet proof is `200`. The same
+browser is `200` on `authenticated` routes, so the refusal is the route.
+
+**The shipped policy does not use it.** `deploy/k8s.yaml` keeps its three routes
+with no `kinds`, because narrowing `/admin` to a phone before a phone is enrolled
+on the install is a lockout, and that is a separate decision.
+
+#### The device kinds, and the `pending` state
+
+A device row has a `state` of `pending`, `live` or `revoked`. Only a `live`
+device is decided for: a pending one is refused on every path with
+`reason: device_pending`, which an operator can tell apart from
+`device_revoked` and from a bad key. `authz-admin list-devices` shows a `STATE`
+column, and `authz.promote_device()` is the one way a row leaves `pending`.
 
 Every host that will serve enrollment needs the `enrollment` route on
 `/__aivan/enroll`. Without it, `POST /__aivan/enroll` on that host answers `403`
@@ -203,8 +246,13 @@ The gate refuses to start. It never serves a partially loaded table.
 | `host "..." is not a bare hostname` | scheme, port or path in the policy key |
 | `uses scheme "..."; only https is allowed` | §3.2 |
 | `has prefix "..."; prefixes start with /` | the prefix does not start with `/` |
-| `uses unknown class "..."` / `has a route with no class` | not one of the four in §3.3 |
+| `uses unknown class "..."` / `has a route with no class` | not one of the five in §3.3 |
 | `declares class "enrollment" on "...", which is not /__aivan/enroll` | §3.3 |
+| `names device kind "..."; the kinds are ...` | §3.3, a typo in `kinds` |
+| `names device kind "..." twice` | §3.3, `kinds: [phone, phone]` |
+| `is class "confidential" with no kinds` | §3.3, otherwise `authenticated` under a second name |
+| `is class "...", which has no device identity to check; kinds belongs on "confidential"` | §3.3, `kinds` on `public` / `enrollment` |
+| `is class "..." and names kinds; only "confidential" requires them` | §3.3, `kinds` on `authenticated` / `admin` |
 | `has prefix "..." more than once` | §4.4 |
 | `yaml: unmarshal errors` / `field ... not found` | a key the schema does not have |
 
@@ -486,6 +534,11 @@ $ kubectl -n "$NS" rollout restart deploy/aivan-authz
 $ kubectl -n "$NS" rollout status  deploy/aivan-authz
 ```
 
+**A `kinds` change is a rollout restart, always.** There is no reload: the file is
+read once, in `Load`, before the listener opens (§3.3 and `config.go`). Editing
+the ConfigMap and reloading a page changes nothing, and the old table keeps
+deciding until the pod restarts.
+
 A bad file shows as `CrashLoopBackOff` with the refusal on stderr. That is the
 gate working as intended — it will not serve a table it could not build. Read it
 with:
@@ -517,8 +570,8 @@ policy is wrong.
 
 | Status | Produced by | What to check |
 |---|---|---|
-| `401` | gate | the decision log's `reason`: `no_proof`, `session_invalid`, `nonce_unknown`, `bad_signature`, `timestamp_skewed` |
-| `403` | gate | `role_insufficient` (policy is right, the person lacks the role), `host_unknown` (host missing from `AIVAN_HOSTS` or the policy), `plain_http` (a router is missing `tls:`), `csrf_missing` / `csrf_samesite` |
+| `401` | gate | the decision log's `reason`: `no_proof`, `session_invalid`, `nonce_unknown`, `bad_signature`, `timestamp_skewed`, `device_revoked`, `device_pending` (waiting for approval) |
+| `403` | gate | `role_insufficient` (policy is right, the person lacks the role), `device_kind_insufficient` (a confidential route refused this device's kind), `host_unknown` (host missing from `AIVAN_HOSTS` or the policy), `plain_http` (a router is missing `tls:`), `csrf_missing` / `csrf_samesite` |
 | `404` | your application | the gate allowed it; the route does not exist, or `/__aivan/` is not routed to the gate |
 | `413` | gate | the body is above `AIVAN_MAX_BODY` |
 | `429` | gate | nonce rate limit |
@@ -540,6 +593,7 @@ Before you apply:
 - [ ] Every hostname is in `AIVAN_HOSTS` and in the policy's `hosts` map, spelled the same.
 - [ ] Each host has `/__aivan/enroll` as `class: enrollment` if anyone will enrol there.
 - [ ] Every prefix your application serves is declared; declaration order does not matter, but longest-first reads better.
+- [ ] Every `confidential` route names its `kinds`, and no other class names any (§3.3).
 - [ ] The `/` route exists as `authenticated`, so nothing is left to default.
 - [ ] `maxBody` is above the gate's `AIVAN_MAX_BODY`, and equal to `maxBodySize`.
 - [ ] The Middleware lists only the four proof headers, `Cookie`, `X-Aivan-Csrf` and `Accept`.

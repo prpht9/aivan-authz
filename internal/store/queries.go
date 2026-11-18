@@ -35,6 +35,11 @@ const (
 // d.kind is selected because X-Aivan-Device-Kind is part of the output
 // contract; the plan's statement text omits it.
 //
+// d.state is selected beside d.revoked_at because "waiting for approval" and
+// "revoked" are different refusals. The row is returned either way and the
+// caller denies with its own reason, so `device_revoked` survives and a pending
+// device says `device_pending` rather than looking like a bad key.
+//
 // The device row is read and never written here. The only write the gate may
 // make to authz.devices is the last_seen_at stamp in SessionMintSQL, which the
 // column grant allows.
@@ -46,7 +51,7 @@ with consumed as (
      and expires_at > now()
   returning device_id, issued_at
 )
-select d.id, d.public_key, d.alg, d.kind, d.revoked_at, d.user_id, d.origin,
+select d.id, d.public_key, d.alg, d.kind, d.state, d.revoked_at, d.user_id, d.origin,
        u.username, u.active, c.issued_at,
        coalesce(array_agg(g.name order by g.name)
                 filter (where g.name is not null), '{}') as roles
@@ -55,7 +60,7 @@ select d.id, d.public_key, d.alg, d.kind, d.revoked_at, d.user_id, d.origin,
   join public.users u  on u.id = d.user_id
   left join public.groups_users gu on gu.user_id = u.id
   left join public.groups g        on g.id = gu.group_id
- group by d.id, d.public_key, d.alg, d.kind, d.revoked_at, d.user_id, d.origin,
+ group by d.id, d.public_key, d.alg, d.kind, d.state, d.revoked_at, d.user_id, d.origin,
           c.issued_at, u.username, u.active`
 
 // NonceSQL inserts a nonce. It intentionally touches no device row: the handler
@@ -80,9 +85,14 @@ const NonceCountSQL = `select count(*) from authz.nonces`
 // was this device last used".
 //
 // The device row is the source of the insert. A device that is missing, bound
-// to another origin, or revoked between the proof check and this statement
+// to another origin, or not live between the proof check and this statement
 // produces no update, so the insert selects nothing and the statement returns
 // no row. That is a denial on the same path as a failed lookup.
+//
+// The predicate is `state = 'live'`, not `revoked_at is null`. It **is** the
+// authorization, so it stays in SQL rather than moving to Go: a pending device
+// must not be able to obtain a cookie even if its proof verified, and the one
+// statement that mints is the right place to refuse it.
 //
 // last_seen_at is the one column the gate may update on authz.devices, which
 // is why the stamp is here rather than a second statement: the column grant
@@ -93,7 +103,7 @@ with device as (
      set last_seen_at = now()
    where id = $2
      and origin = $3
-     and revoked_at is null
+     and state = 'live'
   returning id
 )
 insert into authz.sessions (token_hash, device_id, idle_expires_at, absolute_expires_at)
@@ -109,10 +119,16 @@ returning idle_expires_at, absolute_expires_at`
 // writes. An expired session updates no row, so it returns no row.
 //
 // The join is through authz.devices, which is what makes a revoke effective on
-// the next request (S5): the row still exists, revoked_at is set, and the
+// the next request (S5): the row still exists, the state is not `live`, and the
 // caller denies. The origin predicate keeps a session minted on one host from
 // authenticating another even though the __Host- cookie already cannot cross
 // hosts.
+//
+// d.state is selected beside d.revoked_at so the caller can tell a revoked
+// device from a pending one. A session that outlives its device's return to
+// `pending` — which no code path produces, but a row rewritten by an operator
+// could — is a denial with its own reason rather than a 401 that reads as a
+// broken key.
 const SessionReadSQL = `
 with touched as (
   update authz.sessions s
@@ -124,7 +140,7 @@ with touched as (
      and s.absolute_expires_at > now()
   returning s.device_id
 )
-select d.id, d.revoked_at, d.user_id, d.kind,
+select d.id, d.state, d.revoked_at, d.user_id, d.kind,
        u.username, u.active,
        coalesce(array_agg(g.name order by g.name)
                 filter (where g.name is not null), '{}') as roles
@@ -133,7 +149,7 @@ select d.id, d.revoked_at, d.user_id, d.kind,
   join public.users u  on u.id = d.user_id
   left join public.groups_users gu on gu.user_id = u.id
   left join public.groups g        on g.id = gu.group_id
- group by d.id, d.revoked_at, d.user_id, d.kind, u.username, u.active`
+ group by d.id, d.state, d.revoked_at, d.user_id, d.kind, u.username, u.active`
 
 // SessionDeleteSQL removes one session by the hash of its cookie. It is
 // idempotent: a token that matches no row deletes nothing and is not an error.
@@ -176,8 +192,13 @@ select public_key, alg, retired_at is not null
 // DeviceKeySQL resolves a device's public key and its owner. It is the same
 // row the proof path reads, narrowed to what a signature check needs; the
 // column grant on devices already allows every one of these.
+//
+// state is selected because a pending device must not sign a decision. The
+// caller refuses a non-live row before the signature is checked, which is the
+// same order the proof path uses: an unapproved device is refused without
+// spending CPU on a verification.
 const DeviceKeySQL = `
-select public_key, alg, origin, revoked_at, user_id
+select public_key, alg, origin, state, revoked_at, user_id
   from authz.devices
  where id = $1`
 

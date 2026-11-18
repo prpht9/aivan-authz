@@ -257,6 +257,12 @@ type policyFile struct {
 		Routes []struct {
 			Prefix string `yaml:"prefix"`
 			Class  string `yaml:"class"`
+			// Kinds is the device kinds a `confidential` route accepts. It is
+			// empty everywhere else, and policy.New refuses it elsewhere: a
+			// `public` or `enrollment` route has no identity whose kind could be
+			// checked. KnownFields(true) already makes a typo in the key a
+			// refusal, so `kind:` for `kinds:` cannot pass silently.
+			Kinds []string `yaml:"kinds"`
 		} `yaml:"routes"`
 	} `yaml:"hosts"`
 }
@@ -297,6 +303,7 @@ func loadPolicy(path string) (*policy.Table, int64, error) {
 			h.Routes = append(h.Routes, policy.Route{
 				Prefix: r.Prefix,
 				Class:  policy.Class(strings.ToLower(r.Class)),
+				Kinds:  r.Kinds,
 			})
 		}
 		hosts[host] = h

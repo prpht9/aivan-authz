@@ -262,12 +262,12 @@ func (g *Gate) mintSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := CheckClass(id, m.Class); err != nil {
+	if err := CheckClass(id, m); err != nil {
 		reason, _ := IsDenial(err)
 		if reason == "" {
 			reason = ReasonRoleInsufficient
 		}
-		g.refuse(w, r, http.StatusForbidden, reason, f, "role insufficient")
+		g.refuse(w, r, http.StatusForbidden, reason, f, classRefusalNote(reason))
 		return
 	}
 
@@ -352,6 +352,7 @@ func (g *Gate) insertSession(ctx context.Context, deviceID [16]byte, origin stri
 // second check that could disagree with the first.
 type sessionRow struct {
 	id         [16]byte
+	state      string
 	revokedAt  *time.Time
 	userID     int64
 	kind       string
@@ -371,7 +372,7 @@ func (g *Gate) readSession(ctx context.Context, token, origin string) (sessionRo
 	hash := proof.SHA256Sum([]byte(token))
 	err := g.pool.QueryRow(ctx, store.StmtSessionRead,
 		hash[:], intervalValue(g.sessionIdle), origin,
-	).Scan(&id, &row.revokedAt, &row.userID, &row.kind,
+	).Scan(&id, &row.state, &row.revokedAt, &row.userID, &row.kind,
 		&row.username, &row.userActive, &row.roles)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return row, errNoSession
@@ -409,31 +410,32 @@ func (g *Gate) verifySession(w http.ResponseWriter, r *http.Request, f forwarded
 	case row.revokedAt != nil:
 		g.deny401(w, r, f, ReasonDeviceRevoked)
 		return
+	case row.state != deviceStateLive:
+		// A session whose device is not live is refused on the same request. The
+		// mint already refuses to write one for a pending device, so this is the
+		// belt to that brace: a row an operator moved back to `pending` stops
+		// authenticating immediately.
+		g.deny401(w, r, f, ReasonDevicePending)
+		return
 	case !row.userActive:
 		g.deny401(w, r, f, ReasonUserInactive)
 		return
 	}
 
-	if !safeUsername(row.username) {
+	if hasOccupant(row.kind) && !safeUsername(row.username) {
 		g.refuse(w, r, http.StatusForbidden, ReasonUsername, f, "username cannot be a header value")
 		return
 	}
 
-	id := &identity{
-		UserID:     row.userID,
-		Username:   row.username,
-		DeviceID:   proof.FormatDeviceID(row.id),
-		DeviceKind: row.kind,
-		Roles:      row.roles,
-		Proof:      ProofSession,
-	}
+	id := newIdentity(proof.FormatDeviceID(row.id), row.kind, row.userID,
+		row.username, row.roles, ProofSession)
 
-	if err := CheckClass(id, m.Class); err != nil {
+	if err := CheckClass(id, m); err != nil {
 		reason, _ := IsDenial(err)
 		if reason == "" {
 			reason = ReasonRoleInsufficient
 		}
-		g.refuse(w, r, http.StatusForbidden, reason, f, "role insufficient")
+		g.refuse(w, r, http.StatusForbidden, reason, f, classRefusalNote(reason))
 		return
 	}
 

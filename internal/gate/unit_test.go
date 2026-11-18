@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chris/aivan-authz/internal/policy"
 	"github.com/chris/aivan-authz/internal/proof"
 )
 
@@ -255,6 +256,12 @@ func TestDecodeSignature(t *testing.T) {
 	}
 }
 
+// at builds a match the way policy.Match would for a route of this class, so a
+// test reads as "the route's requirement" rather than as a bare string.
+func at(class policy.Class, kinds ...string) policy.Match {
+	return policy.Match{Class: class, Route: "/", Kinds: kinds}
+}
+
 // TestCheckClass covers the class gate: admin needs the role, authenticated
 // needs nothing extra, and an unknown class refuses.
 func TestCheckClass(t *testing.T) {
@@ -262,30 +269,75 @@ func TestCheckClass(t *testing.T) {
 	plain := &identity{Roles: []string{"free"}}
 	none := &identity{Roles: nil}
 
-	if err := CheckClass(admin, "admin"); err != nil {
+	if err := CheckClass(admin, at(policy.ClassAdmin)); err != nil {
 		t.Errorf("admin on admin route: %v", err)
 	}
 	for _, id := range []*identity{plain, none} {
-		if err := CheckClass(id, "admin"); err == nil {
+		if err := CheckClass(id, at(policy.ClassAdmin)); err == nil {
 			t.Errorf("non-admin allowed on an admin route")
 		}
 	}
 	for _, id := range []*identity{admin, plain, none} {
-		if err := CheckClass(id, "authenticated"); err != nil {
+		if err := CheckClass(id, at(policy.ClassAuthenticated)); err != nil {
 			t.Errorf("authenticated route refused an active device: %v", err)
 		}
 	}
-	if err := CheckClass(nil, "public"); err != nil {
+	if err := CheckClass(nil, at(policy.ClassPublic)); err != nil {
 		t.Errorf("public route: %v", err)
 	}
-	if err := CheckClass(nil, "authenticated"); err == nil {
+	if err := CheckClass(nil, at(policy.ClassAuthenticated)); err == nil {
 		t.Error("a nil identity was allowed on an authenticated route")
 	}
-	if err := CheckClass(nil, "admin"); err == nil {
+	if err := CheckClass(nil, at(policy.ClassAdmin)); err == nil {
 		t.Error("a nil identity was allowed on an admin route")
 	}
-	if err := CheckClass(admin, "enrollment"); err == nil {
+	if err := CheckClass(admin, at(policy.ClassEnrollment)); err == nil {
+		t.Error("an enrollment route accepted a device identity")
+	}
+	if err := CheckClass(admin, at(policy.Class("operator"))); err == nil {
 		t.Error("an unknown class was allowed")
+	}
+}
+
+// TestConfidentialRouteChecksTheKind is the class the whole component exists
+// for: a valid device of an unlisted kind is refused, a listed one is allowed,
+// and the refusal carries its own reason so it is not a 403 an operator has to
+// guess at.
+func TestConfidentialRouteChecksTheKind(t *testing.T) {
+	phone := &identity{DeviceKind: "phone", Roles: []string{"free"}}
+	browser := &identity{DeviceKind: "browser", Roles: []string{"admin"}}
+	panel := &identity{DeviceKind: "panel"}
+
+	route := at(policy.ClassConfidential, "phone", "tablet")
+
+	if err := CheckClass(phone, route); err != nil {
+		t.Errorf("a phone was refused a phone-only route: %v", err)
+	}
+	for _, id := range []*identity{browser, panel} {
+		err := CheckClass(id, route)
+		reason, ok := IsDenial(err)
+		if !ok || reason != ReasonDeviceKindInsufficient {
+			t.Errorf("%s on a phone-only route = %v, want %s", id.DeviceKind, err, ReasonDeviceKindInsufficient)
+		}
+	}
+	if err := CheckClass(nil, route); err == nil {
+		t.Error("a nil identity was allowed on a confidential route")
+	}
+	// A role is not a kind: an admin's browser is still a browser.
+	if err := CheckClass(browser, route); err == nil {
+		t.Error("an admin's browser was allowed where only a phone may go")
+	}
+}
+
+// TestAdminRouteDoesNotNarrowTheKind: `admin` keeps its class and gains nothing
+// from the kind field, because narrowing /admin to one kind would lock the
+// operator out of their own console under a policy change that looks unrelated.
+func TestAdminRouteDoesNotNarrowTheKind(t *testing.T) {
+	for _, kind := range policy.DeviceKinds {
+		id := &identity{DeviceKind: kind, Roles: []string{"admin"}}
+		if err := CheckClass(id, at(policy.ClassAdmin)); err != nil {
+			t.Errorf("an admin's %s was refused /admin: %v", kind, err)
+		}
 	}
 }
 
