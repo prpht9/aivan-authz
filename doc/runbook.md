@@ -454,29 +454,82 @@ it.
 Deleting the gate's routing puts `aivan-hud` back on its own cookie login. The
 public surface is untouched either way.
 
+`kubectl delete -f aivan-hud/deploy/routing.yaml` is **not** the way to do this.
+The file's objects name `namespace: ${AIVAN_NS}`, which is not a namespace, so
+`-n` refuses the file ("the namespace from the provided object ... does not
+match") and no `-n` deletes into a namespace literally named `${AIVAN_NS}`.
+Name the objects instead:
+
 ```console
-$ kubectl -n "$AIVAN_NS" delete -f aivan-hud/deploy/routing.yaml
-$ kubectl -n "$AIVAN_NS" get ingressroute
+$ kubectl -n "$AIVAN_NS" delete ingressroute aivan-hud-gate aivan-hud-gated aivan-hud-public \
+    middleware aivan-auth --ignore-not-found
+$ kubectl -n "$AIVAN_NS" get ingressroute,middleware
 No resources found in hermes-agent namespace.
 ```
 
-Confirm `/admin` works on hud's own cookie:
+**Before deleting, render the router the rollback depends on.** With the three
+routers gone the host has no router at all, and the chart's Ingress is off in
+`k8s/values.yaml`, so `https://aivan-hud.home.arpa/` answers 404. Turn it on
+first, from the hud checkout:
 
 ```console
-$ curl -sk -o /dev/null -w '%{http_code}\n' https://aivan-hud.home.arpa/admin
-200
+$ helm -n "$AIVAN_NS" upgrade aivan-hud ./k8s -f k8s/values.yaml \
+    --set ingress.enabled=true --set ingress.hostname="$HUD_HOST" --wait
 ```
 
-That `200` is hud's own password login (a redirect to `/login` follows if the
-browser has no cookie). The gate's Service can stay deployed and unused, or be
-scaled to zero; with no router naming it, nothing calls it.
+`helm template ./k8s --set ingress.enabled=true` renders exactly one `Ingress`
+named `aivan-hud-aivan-hud`, TLS secret `aivan-hud-tls`, all paths to
+`aivan-hud-aivan-hud:4700`. Never leave `ingress.enabled=true` once the routers
+are back: two routers for one host race.
 
-To put the gate back:
+Confirm the host is served again, and that `/admin` is hud's own refusal rather
+than a 404:
 
 ```console
-$ envsubst < aivan-hud/deploy/routing.yaml | kubectl apply -f -
+$ curl -sk -o /dev/null -w '%{http_code}\n' https://aivan-hud.home.arpa/
+200
 $ curl -sk -o /dev/null -w '%{http_code}\n' https://aivan-hud.home.arpa/admin
 401
+```
+
+The `200` is hud with no gate in front. The `401` is hud's own `require_admin!`
+answering "not signed in": hud's cookie login is a form at `/login`, and a
+browser that signs in there reaches `/admin` with `200`. A `404` on either line
+means the host has no router at all, which is what deleting the routers without
+the chart Ingress first gives you. The gate's Service can stay deployed and
+unused, or be scaled to zero; with no router naming it, nothing calls it.
+
+**Scaling the gate to zero is not free.** hud verifies every approval through
+`AIVAN_GATE_URL`, so with the gate down every approval answers `503` rather
+than `401`. Removing the routers does not affect that path: hud dials the
+gate's cluster Service directly and never went through them.
+
+To put the gate back, run the routing task from the hud checkout. It
+substitutes `AIVAN_NS`, `HUD_SVC` and `HUD_HOST` in Ruby and removes the
+chart's Ingress in the same step:
+
+```console
+$ AIVAN_NS=hermes-agent HUD_HOST=aivan-hud.home.arpa rake deploy:routing
+$ kubectl -n "$AIVAN_NS" get ingressroute,middleware
+```
+
+Three `IngressRoute` objects (`aivan-hud-gate`, `aivan-hud-gated`,
+`aivan-hud-public`) and one `Middleware` (`aivan-auth`). Then:
+
+```console
+$ curl -sk -o /dev/null -w '%{http_code}\n' https://aivan-hud.home.arpa/admin
+401
+```
+
+Do not restore with a bare `envsubst < aivan-hud/deploy/routing.yaml`. The
+three variables are usually unset in the operator's shell, so `envsubst`
+renders `Host(``)` in all three routers, which matches no host and leaves the
+install answering 404 — the restore appears to succeed and changes nothing. If
+`envsubst` is used at all, the exports must be on the same command:
+
+```console
+$ export AIVAN_NS=hermes-agent HUD_SVC=aivan-hud-aivan-hud HUD_HOST=aivan-hud.home.arpa
+$ envsubst < aivan-hud/deploy/routing.yaml | kubectl apply -f -
 ```
 
 ---

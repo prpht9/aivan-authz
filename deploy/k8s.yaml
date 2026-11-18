@@ -172,14 +172,16 @@ spec:
   ports:
     - { name: http, port: 8080, targetPort: http }
 ---
-# No Ingress and no IngressRoute for this Service. It is reached by two callers
-# only: the forwardAuth address, which dials the cluster service, and the gate
-# router on the application's host. A router bound to a host of the gate's own
-# would be a second way in.
+# No Ingress and no IngressRoute for this Service. It is reached by three
+# callers only: the forwardAuth address, which dials the cluster service; the
+# gate router on the application's host; and `verify-signature`, which the
+# application calls pod-to-pod so that its own database credential never decides
+# whether a signature is good (aivan-hud lib/galaxy/signatures.rb, Gate).
+# A router bound to a host of the gate's own would be a second way in.
 #
-# The NetworkPolicy admits Traefik and nothing else. Minting an enrollment is a
-# hud action, and `kubectl exec` with the operator credential is the break-glass
-# path; neither needs a network hole here.
+# The NetworkPolicy admits Traefik and aivan-hud, on 8080, and nothing else.
+# Minting an enrollment is a hud action, and `kubectl exec` with the operator
+# credential is the break-glass path; neither needs a network hole here.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -190,10 +192,17 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
+        # Traefik, for forwardAuth on every gated request.
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: kube-system }
           podSelector:
             matchLabels: { app.kubernetes.io/name: traefik }
+        # The application, for /__aivan/verify-signature. A separate peer, not a
+        # field merged into Traefik's: the two select different pods.
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: hermes-agent }
+          podSelector:
+            matchLabels: { app: aivan-hud }
       ports:
         - { protocol: TCP, port: 8080 }
 ---
