@@ -72,6 +72,7 @@ The harness skips rather than fails when no cluster is reachable or when the
 
 | Document | What it is |
 |---|---|
+| `doc/policy-configmap.md` | for the owner of another application: how to write the gate's policy ConfigMap and wire the Traefik side |
 | `doc/aivan-initial-spec.md` | what the service must be. §6.3 came amended on 2026-11-14 |
 | `doc/aivan-initial-plan.md` | how it was built, phase by phase. §4.1 and §9 are superseded |
 | `doc/design-notes.md` | the reasoning behind the decisions |
@@ -103,7 +104,11 @@ bypass.
 # Command examples
 
 ```
+export CNPG_PRIMARY=$(kubectl get pods -n aivan-core -l cnpg.io/cluster=aivan-core,role=primary -o json|jq -r '.items[0].metadata.name')
+kubectl exec -it $CNPG_PRIMARY -n aivan-core -- psql -U postgres
+```
 
+```
 export SUPW="$(kubectl -n aivan-core get secret aivan-core-superuser -o jsonpath='{.data.password}' | base64 -d)"
 export AIVAN_DB_URL="postgres://postgres:${SUPW}@127.0.0.1:5433/aivan_core?sslmode=disable"
 ./bin/authz-admin revoke --device 62aa0ecf-c79c-3792-fec6-5dd72c70a5ec
