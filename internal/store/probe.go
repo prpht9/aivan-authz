@@ -274,8 +274,12 @@ select id, name, public_key, alg, created_at, retired_at from authz.services lim
 	{
 		what: "can read authz.approvals",
 		run: func(ctx context.Context, tx pgx.Tx) error {
+			// approver_requirement is in the list because ApprovalHashSQL names
+			// it: a missing column grant fails here at startup rather than on the
+			// first decision (aivan-hud 202611170310).
 			_, err := tx.Exec(ctx, `
-select id, subject_user_id, resource, permissions, status, expires_at, consumed_at, request_hash
+select id, subject_user_id, resource, permissions, status, expires_at, consumed_at,
+       request_hash, approver_requirement
   from authz.approvals limit 1`)
 			return err
 		},

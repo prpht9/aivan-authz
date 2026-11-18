@@ -202,11 +202,20 @@ select public_key, alg, origin, state, revoked_at, user_id
   from authz.devices
  where id = $1`
 
-// ApprovalHashSQL reads the stored request hash and the person an approval is
-// for. The hash is what the signed decision must name, so a signature cannot be
-// spent against a payload that was swapped after approval.
+// ApprovalHashSQL reads the stored request hash, the person an approval is for,
+// and the requirement that says who may decide it. The hash is what the signed
+// decision must name, so a signature cannot be spent against a payload that was
+// swapped after approval.
+//
+// **`approver_requirement` is what makes `self_or_admin` reachable.** The gate
+// refuses a device that is not the approval's subject, which is the `subject`
+// rule and stays. A `self_or_admin` request may be decided by an admin for
+// someone else (spec §5.2), so the gate verifies the signature and the
+// application decides who may act on it — the column is the one fact that tells
+// the two apart. It grants nothing: the gate still cannot write an approval, and
+// it learns no rank.
 const ApprovalHashSQL = `
-select request_hash, subject_user_id
+select request_hash, subject_user_id, approver_requirement
   from authz.approvals
  where id = $1`
 
