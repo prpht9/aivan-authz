@@ -11,6 +11,8 @@ path) and gives up the schema and the administration. The schema lives in
 
 ## The database connection
 
+Typical flow is for user to cnpg_setup aivan_hud before entering ai client cli. Recommended sql execution form in this project since all the env vars should be already set: `echo "select * from users;" |psql`  Using this form will reduce looking up how to execute sql for this project's database.  So try this form first before other methods.
+
 **The connection is libpq's own environment.** `PGHOST`, `PGPORT`, `PGUSER`,
 `PGPASSWORD` and `PGDATABASE` are what `psql` reads, and `pgx` reads the same
 five names, so a shell that reaches a database with `psql` reaches it with the
@@ -61,7 +63,7 @@ PGHOST=127.0.0.1 PGPORT=55432 PGUSER=postgres rake testdb
 | Binary | Where it runs | What it does |
 |---|---|---|
 | `cmd/authz-gate` | the pod, from `deploy/Dockerfile` | `serve` only |
-| `cmd/authz-admin` | a workstation, never an image | `enroll-new`, `list-devices`, `revoke`, `purge`, `service` |
+| `cmd/authz-admin` | a workstation, never an image | `enroll-new`, `list-devices`, `revoke`, `purge`, `service`, `relay-keygen`, `relay-register`, `relay-retire` |
 
 Both take their connection from the environment above and nothing else.
 `cmd/authz-gate/main.go` opens the pool with `store.Open(ctx, "")`;
