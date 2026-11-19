@@ -18,7 +18,7 @@ administration.
 | Binary | Where it runs | What it does |
 |---|---|---|
 | `cmd/authz-gate` | the pod, from `deploy/Dockerfile` | `serve` only |
-| `cmd/authz-admin` | a workstation, never an image | `enroll-new`, `list-devices`, `revoke`, `purge`, `service` |
+| `cmd/authz-admin` | a workstation, never an image | `enroll-new`, `list-devices`, `revoke`, `purge`, `service`, `relay-keygen`, `relay-register`, `relay-retire` |
 
 `rake build` produces both in `bin/`. `rake build:image` builds an image
 containing only the gate; `TestGateBinaryHasNoAdminCommands` and
@@ -53,6 +53,84 @@ scripts see exactly what they saw before.
 
 `doc/enrollment-qr.md` is the contract for the mobile app: the payload, the
 claim the app posts, and what it must send afterwards.
+
+## Registering a phone with the approval service
+
+A phone that approves requests has to be known to `aivan-approval` as well as to
+this gate. The relay holds a routing row with the phone's public key, so it can
+address a hint to it and verify the signature it posts. A registered *service*
+writes that row; the phone never registers itself.
+
+**Run every command here as hud's credential.** `aivan_core` is the role the hud
+pod uses, and it holds the whole operator surface; the gate's `aivan_authz` login
+holds only the claim path and answers `permission denied` for everything else:
+
+```console
+$ source ~/work/personal/dotfiles/.functions_aivan
+$ cnpg_setup aivan_hud
+$ export AIVAN_HOSTS=aivan-hud.home.arpa
+```
+
+The connection is libpq's own environment (`PGHOST`, `PGPORT`, `PGUSER`,
+`PGPASSWORD`, `PGDATABASE`), which `cnpg_setup` already exports, so the tool and
+`psql` reach the same database with no second variable. The split is
+`aivan-hud/db/migration/202611190100_operator_surface_grants.rb`;
+`doc/runbook.md` states it for an operator.
+
+The service key is the credential that signs a registration, and it lives on a
+workstation:
+
+```console
+$ ./bin/authz-admin relay-keygen
+created config/aivan-authz.key (0600) and config/aivan-authz.pub
+fingerprint: 8d6408ae…
+```
+
+That key is **the tool's**, not a phone's. A phone's key is a different key with
+a different algorithm: the Android Keystore produces P-256, so every phone
+registers as `es256` whatever the service key is.
+
+The gate's own pod carries the same five variables, so its Secret
+`aivan-authz-db` needs `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and
+`PGDATABASE` rather than the single `AIVAN_DB_URL` an older install has. A pod
+whose Secret still holds only the old key fails to start with
+`CreateContainerConfigError`, and once started it refuses with `PGDATABASE is
+required`.
+
+`config/` is gitignored, and the private half is written `0600`. Register the
+public half with the relay, on a host that can reach its database, then move the
+private half to a Secret or a `pass` entry and delete the copy here:
+
+```console
+$ cd ../aivan-approval
+$ rake "service:register[aivan-authz]" KEY=../aivan-authz/config/aivan-authz.pub ALG=ed25519
+```
+
+`service:register` prints the same fingerprint the keygen did. If the two
+disagree, one of them is a different key.
+
+**Enrollment and registration are one flow.** The phone's key is created in its
+Keystore when it claims the code, so no tool can know the public key before then.
+`--register-relay` mints the code, waits for the claim, and registers the device
+the claim produced:
+
+```console
+$ ./bin/authz-admin enroll-new --username chris --origin aivan-hud.home.arpa \
+    --kind phone --register-relay
+```
+
+The wait ends at the code's expiry. If the relay is down, the device is still
+live at home and the registration is one later command:
+
+```console
+$ ./bin/authz-admin relay-register --device <uuid>
+$ ./bin/authz-admin relay-retire   --device <uuid>
+```
+
+`AIVAN_APPROVAL_URL` names the relay (default `https://approval-dev.cincyaivan.com`);
+`AIVAN_APPROVAL_CA` is a PEM bundle for a CA the workstation does not trust yet.
+`config/README.md` states the key's lifetime and why the private half never
+reaches the cluster.
 
 ## Where the schema lives
 

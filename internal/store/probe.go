@@ -239,6 +239,16 @@ values (-1, 'probe', 'browser', '\x00', now() + interval '1 minute')`)
 		},
 	},
 	{
+		// The mint is hud's credential's, and so is the read and delete its own
+		// duplicate and expiry checks need. The claim path reads none of them:
+		// enroll_device is security definer and reads the table as its owner.
+		what: "can read authz.pending_enrollments",
+		run: func(ctx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `select code_hash from authz.pending_enrollments limit 1`)
+			return err
+		},
+	},
+	{
 		what: "can create a table, by writing DDL",
 		run: func(ctx context.Context, tx pgx.Tx) error {
 			_, err := tx.Exec(ctx, `create table public.privilege_probe (id int)`)

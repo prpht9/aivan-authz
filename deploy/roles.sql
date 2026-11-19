@@ -101,6 +101,15 @@ union all select 'migrations can reference users',     has_table_privilege('aiva
 --   authz cannot read authz.audit_log
 --   authz cannot execute authz.revoke_device
 --   authz can execute authz.enroll_device
+--   authz cannot mint, read or delete authz.pending_enrollments
+--   authz cannot insert or update authz.services
+--   core can mint an enrollment and register or retire a service
+--
+-- The last three are 202611190100_operator_surface_grants.rb. The split it
+-- draws: the gate completes a claim inside a request, and the operator's
+-- credential — hud's — mints the code, registers a service identity, and
+-- appends the audit row that says an operator did it. So `authz-admin` holds one
+-- credential for every subcommand instead of two halves of one tool.
 --
 -- Two more facts this file cannot express, because they belong to the roles'
 -- own setup:

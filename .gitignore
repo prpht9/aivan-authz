@@ -6,6 +6,14 @@
 /scratch
 /seed
 
+# The operator's service key pair. `authz-admin relay-keygen` writes here and
+# nothing in this directory is tracked: the private half signs registrations with
+# aivan-approval, and a key in git is a key that can enrol a device against any
+# user id at the relay. The README is the one exception, so the directory exists
+# with an explanation rather than appearing as an unexplained empty path.
+/config/*
+!/config/README.md
+
 # The root CA's public certificate is tracked in deploy/ca. Its private key
 # never enters this repository: a key here would let anyone mint a certificate
 # for any host in the house. Refuse the shapes a stray copy takes.

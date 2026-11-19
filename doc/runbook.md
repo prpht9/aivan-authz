@@ -23,6 +23,14 @@ operator:
   and never put in an image. `enroll-new`, `revoke`, `list-devices`, `purge` and
   the `service` commands all live there. The gate's image contains only `serve`.
 
+**One credential, and it is hud's.** Every `authz-admin` subcommand runs as
+`aivan_core`, the role the hud pod uses, and `cnpg_setup aivan_hud` supplies it.
+The gate's `aivan_authz` login is the one in the Traefik-facing pod and cannot
+mint a code, register a service, revoke a device or read the audit log;
+`authz-admin` run against it fails with `permission denied`, and that is the
+design rather than a setup mistake. The split is in
+`aivan-hud/db/migration/202611190100_operator_surface_grants.rb`.
+
 The commands below are written against `authz-admin/`. Nothing about the gate's
 runtime changed: the probes, the reason codes, the `413` boundary and the
 latency numbers are as they were.

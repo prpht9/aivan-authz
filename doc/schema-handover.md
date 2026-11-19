@@ -127,13 +127,23 @@ must not hold: insert on authz.devices
                delete on authz.devices
                select on authz.audit_log
                insert or update on authz.approvals
-               insert on authz.services
+               insert or update on authz.services
+               select, insert or delete on authz.pending_enrollments
+               execute on authz.revoke_device
                create on schema authz, or any DDL
 ```
 
-A gate that can write `devices` or read `audit_log` is a misconfigured gate, and
-it should fail to start rather than serve. That error should name the offending
-grant, so an operator can fix it without reading this document.
+The gate's claim still goes through `authz.enroll_device`, which is
+`security definer`, so the pending-enrollment line costs the gate nothing it
+uses. Minting the code, registering a service identity and appending the
+console's audit row are hud's credential's (`aivan-hud`'s
+`202611190100_operator_surface_grants.rb`), so `authz-admin` runs as
+`aivan_core` for every subcommand.
+
+A gate that can write `devices`, mint a code, or read `audit_log` is a
+misconfigured gate, and it should fail to start rather than serve. That error
+should name the offending grant, so an operator can fix it without reading this
+document.
 
 ## 7. Deployment
 

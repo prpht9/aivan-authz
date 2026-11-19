@@ -267,6 +267,40 @@ func TestPrivilegeProbeRefusesAuditRead(t *testing.T) {
 	}
 }
 
+// TestPrivilegeProbeRefusesPendingEnrollmentRead is 202611190100's other half.
+// The claim reads the table through `authz.enroll_device`, which is security
+// definer, so the gate needs no grant here at all. A credential that can read it
+// is one that can enumerate unspent codes, which is the mint's business and not
+// the gate's.
+func TestPrivilegeProbeRefusesPendingEnrollmentRead(t *testing.T) {
+	_, _, super := harness.Setup(t)
+	ctx := context.Background()
+
+	const role = "probe_pending_reader"
+	harness.CreateRole(t, super, role, "")
+	harness.Exec(t, super, `
+		grant usage on schema authz to `+role+`;
+		grant select on authz.pending_enrollments to `+role+`;
+		grant usage on schema public to `+role+`;
+		grant select (id, username, active) on public.users to `+role+`;
+		revoke create on schema public from `+role+`;
+	`)
+
+	db, err := store.Open(ctx, harness.AsRole(t, super, role))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	err = store.PrivilegeProbe(ctx, db.Pool)
+	if err == nil {
+		t.Fatal("probe accepted a credential that can read authz.pending_enrollments")
+	}
+	if !strings.Contains(err.Error(), "authz.pending_enrollments") {
+		t.Fatalf("error %q does not name the pending enrollment table", err)
+	}
+}
+
 // TestPrivilegeProbeLeavesNoTrace asserts the probe's transaction is rolled
 // back: the insert it attempts must not create a row.
 func TestPrivilegeProbeLeavesNoTrace(t *testing.T) {
