@@ -36,9 +36,15 @@ end
 
 desc "Run the integration tests against a scratch database (needs Postgres)"
 task :testdb do
-  ENV["AIVAN_TEST_SUPERUSER_URL"] ||= "postgres://postgres@localhost/postgres"
-  ENV["AIVAN_TEST_DB_URL"] ||= "postgres://aivan_authz@localhost/aivan_authz_test"
-  sh GO, "test", "-tags", "integration", "./..."
+  # The connection is libpq's own environment: PGHOST, PGPORT, PGUSER and
+  # PGPASSWORD name a cluster the role may create roles and databases on, and
+  # PGDATABASE names the maintenance database the scratch ones are created in.
+  # Nothing here sets a private variable, so the same shell that runs
+  # `psql -d postgres` runs the suite.
+  #
+  # -p 1 runs one package at a time: the packages create cluster-wide roles, and
+  # in parallel one package's role creation races another's.
+  sh GO, "test", "-p", "1", "-tags", "integration", "./..."
 end
 
 desc "go vet, then fail if gofmt would rewrite anything"

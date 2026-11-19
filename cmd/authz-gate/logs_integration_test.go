@@ -239,7 +239,7 @@ func verify(t *testing.T, base, method, target, body string, headers map[string]
 // The test would also catch a regression where the purge came back: a gate that
 // deleted these rows would fail here.
 func TestServeStartsWithoutPurging(t *testing.T) {
-	service, super := harness.Setup(t)
+	_, service, super := harness.Setup(t)
 	env := serveEnvForUser(t, service, super, "127.0.0.1:0")
 	d := seedDevice(t, super)
 	harness.Exec(t, super, fmt.Sprintf(`
@@ -299,7 +299,7 @@ func openConn(t *testing.T, dsn string) *pgx.Conn {
 // level. The registry test in package audit covers attribute filtering; this
 // test covers what the handlers actually pass.
 func TestServeLogCarriesNoSecrets(t *testing.T) {
-	service, super := harness.Setup(t)
+	_, service, super := harness.Setup(t)
 	env := serveEnvForUser(t, service, super, "127.0.0.1:0")
 	d := seedDevice(t, super)
 

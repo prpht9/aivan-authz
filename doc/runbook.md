@@ -59,17 +59,23 @@ role, before anything on this side can start:
 ```console
 $ kubectl -n aivan-core port-forward svc/aivan-core-rw 15432:5432 &
 $ cd /path/to/aivan-hud
-$ DATABASE_URL='postgres://aivan_migrations:<pw>@127.0.0.1:15432/aivan_core?sslmode=disable' \
-    bundle exec rake db:migrate
+$ export PGHOST=127.0.0.1 PGPORT=15432 PGUSER=aivan_migrations PGDATABASE=aivan_core PGSSLMODE=disable
+$ export PGPASSWORD='<pw>'
+$ bundle exec rake db:migrate
 $ bundle exec rake db:check_grants     # asserts the matrix and the denials
 ```
+
+The connection is libpq's own environment, so the same five variables point
+`psql` at the same database and `psql -c '\dt authz.*'` is the read-only view of
+what the migration made.
 
 `admin:create` is the application's own first-admin step. Once that person
 exists, their first device is minted from the operator binary, on the
 workstation, against the same port-forward:
 
 ```console
-$ export AIVAN_DB_URL='postgres://aivan_migrations:<pw>@127.0.0.1:15432/aivan_core?sslmode=disable'
+$ export PGHOST=127.0.0.1 PGPORT=15432 PGUSER=aivan_migrations PGDATABASE=aivan_core PGSSLMODE=disable
+$ export PGPASSWORD='<pw>'          # the same variables psql reads
 $ export AIVAN_HOSTS=aivan-hud.home.arpa
 $ ./authz-admin enroll-new --username chris --origin aivan-hud.home.arpa --kind browser
 ```
@@ -303,9 +309,12 @@ Rotating it is three steps and one restart.
 $ kubectl -n aivan-core exec aivan-core-1 -- psql -U postgres -d aivan_core -c \
     "alter role aivan_authz password '<new-pw>'"
 
-# 2. The secret.
+# 2. The secret. One key per libpq variable, which is what the Deployment
+#    mounts and what psql reads.
 $ kubectl -n "$AIVAN_NS" create secret generic aivan-authz-db \
-    --from-literal AIVAN_DB_URL='postgres://aivan_authz:<new-pw>@aivan-core-rw.aivan-core.svc.cluster.local:5432/aivan_core?sslmode=require' \
+    --from-literal PGHOST=aivan-core-rw.aivan-core.svc.cluster.local \
+    --from-literal PGPORT=5432 --from-literal PGUSER=aivan_authz \
+    --from-literal PGPASSWORD='<new-pw>' --from-literal PGDATABASE=aivan_core \
     --dry-run=client -o yaml | kubectl apply -f -
 
 # 3. Restart, which is what makes the pod read the new secret.
@@ -630,7 +639,8 @@ attempt 2: 401 Unauthorized body="authentication required: POST /__aivan/nonce"
 See `doc/latency-report.md`. The short version:
 
 ```console
-$ eval "$(go run ./test/load/seed -dsn "$MIGRATION_DSN" -user 1 -count 100000 -jwk-env)"
+$ eval "$(PGHOST=127.0.0.1 PGPORT=15432 PGUSER=aivan_migrations PGDATABASE=aivan_core PGSSLMODE=disable \
+          go run ./test/load/seed -user 1 -count 100000 -jwk-env)"
 $ k6 run -e AIVAN_PROFILE=steady200 -e AIVAN_VIA=handler \
     -e AIVAN_TARGET=http://127.0.0.1:8080 \
     -e AIVAN_LOAD_DEVICE="$AIVAN_LOAD_DEVICE" -e AIVAN_LOAD_JWK="$AIVAN_LOAD_JWK" \

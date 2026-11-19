@@ -16,7 +16,8 @@
 //
 //   # one line of environment for the script; the device id and the key come
 //   # from the same run of the seeder
-//   eval "$(go run ./test/load/seed -dsn "$MIGRATION_DSN" -user 1 -count 100000 -jwk-env)"
+//   eval "$(PGUSER=aivan_migrations PGDATABASE=aivan_core \
+//            go run ./test/load/seed -user 1 -count 100000 -jwk-env)"
 //   k6 run -e AIVAN_TARGET=https://aivan-hud.home.arpa \
 //          -e AIVAN_NONCES=/tmp/aivan-nonces.json test/load/verify.js
 //

@@ -63,13 +63,13 @@ func binary(t *testing.T) string {
 	return binPath
 }
 
-// enrollEnv is a complete environment for a console command against dsn.
+// enrollEnv is a complete environment for a console command against the
+// database dsn names. PGDATABASE and PGUSER carry the target; PGHOST, PGPORT and
+// PGPASSWORD are inherited, as they are by psql.
 func enrollEnv(t *testing.T, dsn string) []string {
 	t.Helper()
-	return append(os.Environ(),
-		"AIVAN_DB_URL="+dsn,
-		"AIVAN_HOSTS=aivan-hud.home.arpa,second.home.arpa",
-	)
+	return append(harness.EnvFor(harness.DatabaseOf(dsn), harness.RoleOf(dsn)),
+		"AIVAN_HOSTS=aivan-hud.home.arpa,second.home.arpa")
 }
 
 // runConsole runs `authz <args...>` and returns exit code and combined output.
@@ -98,7 +98,7 @@ func seedOneUser(t *testing.T, dsn, username string) {
 // TestEnrollNewPrintsACodeOnce is F2 through the real binary: a code, a record,
 // and a printed block an operator can read.
 func TestEnrollNewPrintsACodeOnce(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	seedOneUser(t, super, "alice")
 
 	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
@@ -128,7 +128,7 @@ func TestEnrollNewPrintsACodeOnce(t *testing.T) {
 // TestEnrollNewHasNoShowFlag: the phase forbids a re-print path, so the flag is
 // a usage error and prints nothing.
 func TestEnrollNewHasNoShowFlag(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	seedOneUser(t, super, "alice")
 
 	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
@@ -147,7 +147,7 @@ func TestEnrollNewHasNoShowFlag(t *testing.T) {
 // TestEnrollNewRefusesAnUnknownUser is the console's explicitness: a typo is a
 // non-zero exit and a message, unlike HTTP's opaque denial.
 func TestEnrollNewRefusesAnUnknownUser(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	seedOneUser(t, super, "alice")
 
 	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
@@ -163,7 +163,7 @@ func TestEnrollNewRefusesAnUnknownUser(t *testing.T) {
 // TestEnrollNewRefusesAnOriginOutsideHosts: the origin must be one the gate
 // serves, which is checked against the same AIVAN_HOSTS the gate parses.
 func TestEnrollNewRefusesAnOriginOutsideHosts(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	seedOneUser(t, super, "alice")
 
 	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
@@ -202,7 +202,7 @@ func TestDevSessionIsGone(t *testing.T) {
 // TestEnrollNewRefusesAnUnknownQRStyle: a typo in --qr is a usage error, not a
 // silently substituted style, and it must not mint a code first.
 func TestEnrollNewRefusesAnUnknownQRStyle(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	seedOneUser(t, super, "alice")
 
 	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
@@ -223,7 +223,7 @@ func TestEnrollNewRefusesAnUnknownQRStyle(t *testing.T) {
 // reads. The square's characters are turned back into modules here, so this
 // fails if the renderer, the URL or the quiet zone drifts.
 func TestEnrollNewQRDrawsTheEnrollmentURL(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	seedOneUser(t, super, "alice")
 
 	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),
@@ -284,7 +284,7 @@ func connectScan(t *testing.T, dsn, sql string, args []any, dest ...any) error {
 // output alone. Every existing test in this file runs without --qr and compares
 // text, so this is the explicit form of that guarantee.
 func TestEnrollNewQRAutoWritesNoSquareToAPipe(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	seedOneUser(t, super, "alice")
 
 	code, out := runConsole(t, enrollEnv(t, harness.Operator(t, super)),

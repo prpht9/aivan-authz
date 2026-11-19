@@ -43,7 +43,7 @@ func writePolicy(t *testing.T, body string) string {
 func env(t *testing.T, overrides map[string]string) func(string) string {
 	t.Helper()
 	base := map[string]string{
-		"AIVAN_DB_URL":       "postgres://aivan_authz@localhost/aivan_authz",
+		"PGDATABASE":         "aivan_core_test",
 		"AIVAN_HOSTS":        "aivan-hud.home.arpa",
 		"AIVAN_POLICY":       writePolicy(t, goodPolicy),
 		"AIVAN_NONCE_TTL":    "120s",
@@ -141,9 +141,9 @@ hosts:
 		wantSub string
 	}{
 		{
-			name:    "db url empty",
-			env:     map[string]string{"AIVAN_DB_URL": ""},
-			wantSub: "AIVAN_DB_URL is required",
+			name:    "database name empty",
+			env:     map[string]string{"PGDATABASE": ""},
+			wantSub: "PGDATABASE is required",
 		},
 		{
 			name:    "hosts empty",
@@ -360,12 +360,17 @@ func TestHostsAreNormalisedAndDeduplicated(t *testing.T) {
 	}
 }
 
-func TestDatabaseURL(t *testing.T) {
-	if _, err := DatabaseURL(func(string) string { return "" }); err == nil {
-		t.Fatal("empty AIVAN_DB_URL accepted")
+func TestDatabaseName(t *testing.T) {
+	if _, err := DatabaseName(func(string) string { return "" }); err == nil {
+		t.Fatal("empty PGDATABASE accepted")
 	}
-	got, err := DatabaseURL(func(k string) string { return " postgres://x " })
-	if err != nil || got != "postgres://x" {
-		t.Fatalf("DatabaseURL = %q, %v", got, err)
+	got, err := DatabaseName(func(k string) string {
+		if k == "PGDATABASE" {
+			return " aivan_core "
+		}
+		return ""
+	})
+	if err != nil || got != "aivan_core" {
+		t.Fatalf("DatabaseName = %q, %v", got, err)
 	}
 }

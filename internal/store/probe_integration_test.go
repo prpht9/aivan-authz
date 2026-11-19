@@ -16,7 +16,7 @@ import (
 // aivan-hud/doc/schema-ownership.md produces. Without this, a probe that always refuses would
 // look like a passing security test.
 func TestPrivilegeProbeAcceptsServiceRole(t *testing.T) {
-	service, _ := harness.Setup(t)
+	_, service, _ := harness.Setup(t)
 	ctx := context.Background()
 
 	db, err := store.Open(ctx, service)
@@ -33,7 +33,7 @@ func TestPrivilegeProbeAcceptsServiceRole(t *testing.T) {
 // TestPrivilegeProbeRefusesSuperuser is S16: a credential that can create
 // objects in public never starts.
 func TestPrivilegeProbeRefusesSuperuser(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	ctx := context.Background()
 
 	db, err := store.Open(ctx, super)
@@ -64,7 +64,7 @@ func TestPrivilegeProbeRefusesSuperuser(t *testing.T) {
 // TestPrivilegeProbeRefusesPasswordDigest is S20: holding the column-level
 // grant the design deliberately withholds is also a refusal.
 func TestPrivilegeProbeRefusesPasswordDigest(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	ctx := context.Background()
 
 	const role = "probe_digest_reader"
@@ -101,7 +101,7 @@ func TestPrivilegeProbeRefusesPasswordDigest(t *testing.T) {
 // own: a role with no CREATE and no password_digest read, but with INSERT on
 // public.users, is still over-privileged.
 func TestPrivilegeProbeRefusesWritableUsers(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	ctx := context.Background()
 
 	const role = "probe_users_writer"
@@ -136,7 +136,7 @@ func TestPrivilegeProbeRefusesWritableUsers(t *testing.T) {
 // rather than naming a grant the operator would go looking for.
 func TestPrivilegeProbeReportsUnmigratedDatabase(t *testing.T) {
 	ctx := context.Background()
-	dsn := harness.CreateDatabase(t)
+	_, dsn := harness.CreateDatabase(t)
 	harness.Exec(t, dsn, `
 		create table public.users (id bigint primary key, username text, active boolean);
 	`)
@@ -173,7 +173,7 @@ func TestPrivilegeProbeReportsUnmigratedDatabase(t *testing.T) {
 // matrix without reading the design documents first.
 func TestPrivilegeProbeNamesAMissingGrant(t *testing.T) {
 	ctx := context.Background()
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 
 	const role = "probe_missing_grant"
 	harness.CreateRole(t, super, role, "")
@@ -205,7 +205,7 @@ func TestPrivilegeProbeNamesAMissingGrant(t *testing.T) {
 // turns on: a gate that can write a device can create a credential, which is a
 // different authority from spending one.
 func TestPrivilegeProbeRefusesWritableDevices(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	ctx := context.Background()
 
 	const role = "probe_device_writer"
@@ -239,7 +239,7 @@ func TestPrivilegeProbeRefusesWritableDevices(t *testing.T) {
 // TestPrivilegeProbeRefusesAuditRead: the evidence is append-only and unreadable
 // to the observed. A credential that can read it back is a refusal.
 func TestPrivilegeProbeRefusesAuditRead(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	ctx := context.Background()
 
 	const role = "probe_audit_reader"
@@ -270,7 +270,7 @@ func TestPrivilegeProbeRefusesAuditRead(t *testing.T) {
 // TestPrivilegeProbeLeavesNoTrace asserts the probe's transaction is rolled
 // back: the insert it attempts must not create a row.
 func TestPrivilegeProbeLeavesNoTrace(t *testing.T) {
-	service, super := harness.Setup(t)
+	_, service, super := harness.Setup(t)
 	ctx := context.Background()
 
 	serviceDB, err := store.Open(ctx, service)

@@ -27,7 +27,11 @@ const (
 
 // Config is the validated runtime configuration.
 type Config struct {
-	DBURL      string
+	// Database is the database name from PGDATABASE. The rest of the
+	// connection — host, port, user, password, sslmode — is libpq's own
+	// environment, read by pgx, so this program parses no connection string
+	// and a shell that reaches the database with psql reaches it here.
+	Database   string
 	Listen     string
 	Hosts      []string
 	PolicyPath string
@@ -49,13 +53,17 @@ type Config struct {
 	Policy *policy.Table
 }
 
-// DatabaseURL reads the one variable `migrate` needs.
-func DatabaseURL(getenv func(string) string) (string, error) {
-	dsn := strings.TrimSpace(getenv("AIVAN_DB_URL"))
-	if dsn == "" {
-		return "", errors.New("AIVAN_DB_URL is required")
+// DatabaseName reads PGDATABASE, the one connection variable a command needs
+// beyond what libpq supplies for itself. pgx, like psql, fills host, port, user,
+// password and sslmode from PGHOST, PGPORT, PGUSER, PGPASSWORD and PGSSLMODE, so
+// there is no URL to require or trim. A blank name is refused here rather than
+// left to become a connection to a database named after the OS user.
+func DatabaseName(getenv func(string) string) (string, error) {
+	name := strings.TrimSpace(getenv("PGDATABASE"))
+	if name == "" {
+		return "", errors.New("PGDATABASE is required")
 	}
-	return dsn, nil
+	return name, nil
 }
 
 // LoadFromEnv validates the process environment.
@@ -64,13 +72,13 @@ func LoadFromEnv() (*Config, error) { return Load(os.Getenv) }
 // Load validates configuration read through getenv. Policy file contents are
 // read from disk.
 func Load(getenv func(string) string) (*Config, error) {
-	dsn, err := DatabaseURL(getenv)
+	name, err := DatabaseName(getenv)
 	if err != nil {
 		return nil, err
 	}
 
 	cfg := &Config{
-		DBURL:      dsn,
+		Database:   name,
 		Listen:     value(getenv, "AIVAN_LISTEN", ":8080"),
 		PolicyPath: value(getenv, "AIVAN_POLICY", DefaultPolicyPath),
 	}

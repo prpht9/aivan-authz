@@ -64,9 +64,26 @@ so the tests run against the schema an install actually has:
 $ rake testdb        # needs a Postgres the test user can create roles in
 ```
 
-`AIVAN_TEST_SUPERUSER_URL` defaults to `postgres://postgres@localhost/postgres`.
-The harness skips rather than fails when no cluster is reachable or when the
-`aivan-hud` checkout is absent.
+The tests read libpq's own environment, the same five variables `psql` reads.
+`PGUSER` (or the OS user when unset) must be able to create roles and databases,
+and `PGDATABASE` names the maintenance database the scratch ones are created in
+(the harness uses `postgres`):
+
+```console
+$ PGHOST=127.0.0.1 PGPORT=55432 PGUSER=postgres rake testdb
+```
+
+`testdb` passes `-p 1`, because the packages create cluster-wide roles and would
+race each other in parallel. The harness skips rather than fails when no cluster
+is reachable or when the `aivan-hud` checkout is absent.
+
+## The database connection
+
+There is no connection URL. The gate, `authz-admin`, the tests and the load
+seeder all take their connection from `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`
+and `PGDATABASE`, exactly as `psql` does, so one shell reaches one database
+whichever of them you run. The Secret the Deployment mounts carries those five
+names, one key each.
 
 ## Reference, not instruction
 
@@ -109,8 +126,8 @@ kubectl exec -it $CNPG_PRIMARY -n aivan-core -- psql -U postgres
 ```
 
 ```
-export SUPW="$(kubectl -n aivan-core get secret aivan-core-superuser -o jsonpath='{.data.password}' | base64 -d)"
-export AIVAN_DB_URL="postgres://postgres:${SUPW}@127.0.0.1:5433/aivan_core?sslmode=disable"
+export PGHOST=127.0.0.1 PGPORT=5433 PGUSER=postgres PGDATABASE=aivan_core PGSSLMODE=disable
+export PGPASSWORD="$(kubectl -n aivan-core get secret aivan-core-superuser -o jsonpath='{.data.password}' | base64 -d)"
 ./bin/authz-admin revoke --device 62aa0ecf-c79c-3792-fec6-5dd72c70a5ec
 ./bin/authz-admin enroll-new --username alice --origin aivan-hud.home.arpa --kind browser --qr
 ```

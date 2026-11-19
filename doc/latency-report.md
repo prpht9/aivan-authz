@@ -136,7 +136,7 @@ size was the one that mattered, and it mattered only for the first second.
 # 1. A scratch database with the schema. The migrations live in aivan-hud now
 #    (doc/schema-handover.md §2): there is no migrate step in this project.
 createdb aivan_load
-(cd ../aivan-hud && DATABASE_URL=postgres://.../aivan_load bundle exec rake db:migrate)
+(cd ../aivan-hud && PGDATABASE=aivan_load bundle exec rake db:migrate)
 # The grants are described by the same run; a load credential that holds them is
 # aivan_authz on an install, or the owner on a scratch database.
 
@@ -144,10 +144,10 @@ createdb aivan_load
 #    hud's own migration creates public.users, so only the row is needed.
 psql -d aivan_load -c "insert into public.users (id, email, username, active, password_digest, created_at, updated_at)
   values (10,'load@example.invalid','loaduser',true,'x',now(),now())"
-eval "$(go run ./test/load/seed -dsn "$DSN" -user 10 -count 100000 -kind tablet -jwk-env)"
+eval "$(PGDATABASE=aivan_load go run ./test/load/seed -user 10 -count 100000 -kind tablet -jwk-env)"
 
 # 3. The gate.
-AIVAN_DB_URL=$DSN AIVAN_HOSTS=aivan-hud.home.arpa AIVAN_POLICY=./policy.yaml \
+PGDATABASE=aivan_load AIVAN_HOSTS=aivan-hud.home.arpa AIVAN_POLICY=./policy.yaml \
   AIVAN_LISTEN=127.0.0.1:18080 ./bin/authz-gate serve
 
 # 4. Handler-only.
@@ -158,8 +158,13 @@ k6 run -e AIVAN_PROFILE=steady200 -e AIVAN_VIA=handler \
 
 `test/load/seed` prints `AIVAN_LOAD_DEVICE` and `AIVAN_LOAD_JWK` as shell
 assignments when given `-jwk-env`. It writes a device row and nonce rows with
-whatever credential its `-dsn` names, so it runs as the migration role, never as
-the gate's own role.
+whatever libpq connection its environment names (`PGUSER`, `PGDATABASE`, and the
+rest as `psql` reads them), so it runs as the migration role, never as the gate's
+own role.
+
+The steps above name one database — `aivan_load` — and leave host, port, user and
+password to libpq, so `psql -d aivan_load` and each command below reach the same
+one.
 
 A nonce is single use. A second run against the same pool file would present
 spent nonces and every accept would be a `nonce_unknown` 401; `-nonce` files are

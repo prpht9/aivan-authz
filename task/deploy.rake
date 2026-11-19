@@ -112,8 +112,10 @@ module AuthzDeploy
   # Deployment stays pending on the mount and the pod never starts. The purge
   # used to be listed here; it moved to aivan-hud's chart, which mounts
   # aivan-hud-db, so this manifest no longer needs a credential of its own.
+  # One key per libpq variable: the gate reads them the way psql does, so a
+  # Secret whose keys are the variable names is also one an operator can export.
   REQUIRED_SECRETS = {
-    "aivan-authz-db" => "AIVAN_DB_URL"
+    "aivan-authz-db" => %w[PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE]
   }.freeze
 
   # A terminating pod is still Running, and during a rollout the old pod's image
@@ -140,13 +142,13 @@ module AuthzDeploy
   end
 
   # Returns [[name, key], ...] for the secrets the manifest needs that are absent
-  # or missing their key.
+  # or missing a key.
   def missing_secrets
-    REQUIRED_SECRETS.filter_map do |name, key|
+    REQUIRED_SECRETS.flat_map do |name, keys|
       out, = kubectl("-n", namespace, "get", "secret", name, "--ignore-not-found", "-o", "json")
       # --ignore-not-found prints nothing for an absent secret.
       data = out.to_s.strip.empty? ? {} : (JSON.parse(out)["data"] || {})
-      [name, key] unless data.key?(key)
+      Array(keys).reject { |key| data.key?(key) }.map { |key| [name, key] }
     end
   end
 

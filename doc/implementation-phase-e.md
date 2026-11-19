@@ -244,9 +244,21 @@ spec:
             - { name: AIVAN_LISTEN, value: ":8080" }
             - { name: AIVAN_HOSTS, value: "aivan-hud.home.arpa" }
             - { name: AIVAN_POLICY, value: "/etc/aivan/policy.yaml" }
-            - name: AIVAN_DB_URL
+            - name: PGHOST
               valueFrom:
-                secretKeyRef: { name: aivan-authz-db, key: uri }
+                secretKeyRef: { name: aivan-authz-db, key: PGHOST }
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef: { name: aivan-authz-db, key: PGPORT }
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef: { name: aivan-authz-db, key: PGUSER }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: aivan-authz-db, key: PGPASSWORD }
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef: { name: aivan-authz-db, key: PGDATABASE }
           readinessProbe:
             httpGet: { path: /readyz, port: 8080 }
             periodSeconds: 5

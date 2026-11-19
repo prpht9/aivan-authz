@@ -59,7 +59,7 @@ Environment only. Every refusal below must have a test.
 
 | Variable | Default | Rule |
 |---|---|---|
-| `AIVAN_DB_URL` | — | required |
+| `PGDATABASE` | — | required; host, port, user and password are libpq's own `PGHOST`, `PGPORT`, `PGUSER` and `PGPASSWORD` |
 | `AIVAN_LISTEN` | `:8080` | |
 | `AIVAN_HOSTS` | — | required; comma-separated; no `*` |
 | `AIVAN_POLICY` | `/etc/aivan/policy.yaml` | must exist and parse |
@@ -70,7 +70,7 @@ Environment only. Every refusal below must have a test.
 | `AIVAN_MAX_BODY` | `1048576` | must be ≥ 65536 |
 | `AIVAN_TRUSTED_PROXY_CIDRS` | — | optional; for the rate limiter later |
 
-Refuse to start when: `AIVAN_DB_URL` is empty; `AIVAN_HOSTS` is empty or
+Refuse to start when: `PGDATABASE` is empty; `AIVAN_HOSTS` is empty or
 contains `*`; a policy host is not listed in `AIVAN_HOSTS`; a policy host is
 reached over a scheme other than `https`; `AIVAN_NONCE_TTL` exceeds
 `AIVAN_SKEW`; session idle exceeds session max; `AIVAN_MAX_BODY` is below the

@@ -49,7 +49,7 @@ type fixture struct {
 
 func setup(t *testing.T) fixture {
 	t.Helper()
-	service, super := harness.Setup(t)
+	_, service, super := harness.Setup(t)
 
 	core := harness.AsRole(t, super, harness.CoreRole)
 	db, err := store.Open(context.Background(), core)

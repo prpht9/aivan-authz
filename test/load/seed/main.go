@@ -11,12 +11,16 @@
 //     can produce the pair; the script consumes them one per accepted request.
 //
 // It is an operator tool, not part of the gate: it writes authz.devices and
-// authz.nonces with whatever credential its DSN names, which is the migration
-// role or a superuser, and never the gate's own read-mostly role.
+// authz.nonces with whatever libpq connection its environment names, which is
+// the migration role or a superuser, and never the gate's own read-mostly role.
+// The connection is PGHOST, PGPORT, PGUSER, PGPASSWORD and PGDATABASE, exactly
+// as psql reads them; -dsn is there for a caller that would rather pass a
+// connection string outright.
 //
 // Usage:
 //
-//	go run ./test/load/seed -dsn "$MIGRATION_DSN" -user 1 -count 100000
+//	PGUSER=aivan_migrations PGDATABASE=aivan_core \
+//	  go run ./test/load/seed -user 1 -count 100000
 //
 // The two outputs are the device id and JWK (stdout, as shell assignments with
 // -jwk-env), and the nonce file (default /tmp/aivan-nonces.json).
@@ -42,7 +46,7 @@ import (
 func main() {
 	if err := run(); err != nil {
 		// The message may quote a driver error; a load tester's shell is not
-		// the gate's log, but the DSN still should not be echoed.
+		// the gate's log, but connection detail should still not be echoed.
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -50,7 +54,7 @@ func main() {
 
 func run() error {
 	var (
-		dsn        = flag.String("dsn", os.Getenv("AIVAN_DB_URL"), "database URL (default $AIVAN_DB_URL)")
+		dsn        = flag.String("dsn", "", "connection string; when empty, libpq's PG* environment is used")
 		userID     = flag.Int64("user", 0, "user id the device belongs to")
 		origin     = flag.String("origin", "aivan-hud.home.arpa", "origin the device is enrolled for")
 		kind       = flag.String("kind", "tablet", "device kind; must not collide with a live device of the same user and origin")
@@ -63,9 +67,6 @@ func run() error {
 	)
 	flag.Parse()
 
-	if *dsn == "" {
-		return fmt.Errorf("-dsn or AIVAN_DB_URL is required")
-	}
 	if *userID == 0 {
 		return fmt.Errorf("-user is required: the device must belong to an existing person")
 	}

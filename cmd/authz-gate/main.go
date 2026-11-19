@@ -99,7 +99,9 @@ func serve(log *slog.Logger) error {
 	// hands out its first connection, so every connection the gate ever uses
 	// has both.
 	counter := &store.Counter{}
-	db, err := store.Open(ctx, cfg.DBURL,
+	// The empty string means the connection is libpq's own environment: PGHOST,
+	// PGPORT, PGUSER, PGPASSWORD and PGDATABASE are exactly what psql reads.
+	db, err := store.Open(ctx, "",
 		store.WithQueryCounter(counter),
 		store.WithStatements(store.GateStatements()...),
 	)

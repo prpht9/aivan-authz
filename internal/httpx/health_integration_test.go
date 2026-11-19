@@ -22,7 +22,7 @@ func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)
 // database answers, 503 as soon as it does not, and 200 again afterwards
 // without a restart.
 func TestReadinessTracksTheDatabase(t *testing.T) {
-	service, _ := harness.Setup(t)
+	_, service, _ := harness.Setup(t)
 	ctx := context.Background()
 
 	db, err := store.Open(ctx, service)
@@ -96,7 +96,7 @@ func TestReadinessTracksTheDatabase(t *testing.T) {
 // could not read devices.
 func TestReadinessRequiresDevices(t *testing.T) {
 	harness.Env(t)
-	dsn := harness.CreateDatabase(t)
+	_, dsn := harness.CreateDatabase(t)
 	// No migrations, so authz.devices does not exist.
 
 	db, err := store.Open(context.Background(), dsn)

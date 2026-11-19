@@ -18,10 +18,15 @@
 #
 # The Secret aivan-authz-db is not in this file. It holds the runtime
 # credential, and a placeholder in a manifest would overwrite a real secret on
-# the next apply:
+# the next apply. It carries libpq's five variables, one key each, so an operator
+# who exports it reaches the same database with psql:
 #
 #   kubectl -n "$AIVAN_NS" create secret generic aivan-authz-db \
-#     --from-literal AIVAN_DB_URL='postgres://aivan_authz:<pw>@aivan-core-rw.aivan-core.svc.cluster.local:5432/aivan_core?sslmode=require'
+#     --from-literal PGHOST=aivan-core-rw.aivan-core.svc.cluster.local \
+#     --from-literal PGPORT=5432 \
+#     --from-literal PGUSER=aivan_authz \
+#     --from-literal PGPASSWORD='<pw>' \
+#     --from-literal PGDATABASE=aivan_core
 #
 # The role behind it is created once, out of band, by the install step:
 #
@@ -98,9 +103,29 @@ spec:
           ports:
             - { name: http, containerPort: 8080 }
           env:
-            - name: AIVAN_DB_URL
+            # libpq's own variable names, so the credential here means the same
+            # thing to psql at an operator's terminal. One Secret carries the
+            # five values; the connection itself is pgx's, exactly as it is
+            # psql's, and there is no connection string to keep in step.
+            - name: PGHOST
               valueFrom:
-                secretKeyRef: { name: aivan-authz-db, key: AIVAN_DB_URL }
+                secretKeyRef: { name: aivan-authz-db, key: PGHOST }
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef: { name: aivan-authz-db, key: PGPORT }
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef: { name: aivan-authz-db, key: PGUSER }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: aivan-authz-db, key: PGPASSWORD }
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef: { name: aivan-authz-db, key: PGDATABASE }
+            # The in-cluster service terminates TLS on its own certificate, so
+            # the gate requires it rather than trying plaintext first.
+            - name: PGSSLMODE
+              value: require
             - name: AIVAN_HOSTS
               value: aivan-hud.home.arpa
             - name: AIVAN_POLICY

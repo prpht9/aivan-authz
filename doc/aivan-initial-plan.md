@@ -430,13 +430,13 @@ gate must not vary timing or body between "no such device" and "bad signature"
 ## 6. Configuration
 
 Environment only, validated at boot, refusing to start on any of: a missing
-database URL, a policy file naming a host not in `AIVAN_HOSTS`, a non-`https`
+database name, a policy file naming a host not in `AIVAN_HOSTS`, a non-`https`
 scheme for any host, a cookie without `__Host-`, or a nonce TTL longer than the
 timestamp skew.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `AIVAN_DB_URL` | — | required; the service role, never the migration role |
+| `PGDATABASE` | — | required; with `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` from libpq. The service role, never the migration role |
 | `AIVAN_LISTEN` | `:8080` | |
 | `AIVAN_HOSTS` | — | comma-separated; no wildcards |
 | `AIVAN_POLICY` | `/etc/aivan/policy.yaml` | per host and path prefix |

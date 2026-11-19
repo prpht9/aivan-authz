@@ -30,7 +30,11 @@
 --
 -- Substitute the two placeholders, then:
 --
---   psql "$DATABASE_URL" -f deploy/roles.sql
+--   PGDATABASE=aivan_core psql -f deploy/roles.sql
+--
+-- psql reads PGHOST, PGPORT, PGUSER, PGPASSWORD and PGDATABASE from the
+-- environment, so the run is the same one that reaches the database with a rake
+-- task in aivan-hud.
 --
 -- Safe to run twice only if the CREATE ROLE lines are commented out on the
 -- second run; PostgreSQL has no CREATE ROLE IF NOT EXISTS.

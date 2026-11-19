@@ -69,10 +69,14 @@ func (d device) sign(message string) []byte {
 
 // env is a running gate against a scratch database.
 type env struct {
-	t       testing.TB
-	service string
-	super   string
-	pool    *pgxpool.Pool
+	t testing.TB
+	// database is the scratch database's name, the value a spawned binary is
+	// given as PGDATABASE. service and super are connection strings for this
+	// process's own pools.
+	database string
+	service  string
+	super    string
+	pool     *pgxpool.Pool
 	// admin reads through a credential the gate does not hold: a real row in
 	// authz.pending_enrollments, authz.audit_log, or another person's session.
 	// The gate's own grants refuse those reads, so an assertion that used pool
@@ -139,7 +143,7 @@ func (l *logBuffer) reasons() []string {
 // newEnvWithLog is newEnv with an explicit log sink.
 func newEnvWithLog(t testing.TB, sink io.Writer) *env {
 	t.Helper()
-	service, super := harness.Setup(t)
+	database, service, super := harness.Setup(t)
 
 	counter := &store.Counter{}
 	db, err := store.Open(context.Background(), service,
@@ -159,7 +163,7 @@ func newEnvWithLog(t testing.TB, sink io.Writer) *env {
 	admin := harness.Pool(t, super)
 
 	e := &env{
-		t: t, service: service, super: super, pool: db.Pool, admin: admin,
+		t: t, database: database, service: service, super: super, pool: db.Pool, admin: admin,
 		counter: counter, logBuf: logs,
 		// Truncated to the second so a timestamp and the database's now()
 		// agree on the same instant without sub-second races. The app clock is

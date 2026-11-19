@@ -4,14 +4,16 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ConnectTimeout bounds pool creation so a bad DSN or an unreachable database
-// fails the start rather than hanging it.
+// ConnectTimeout bounds pool creation so a wrong setting or an unreachable
+// database fails the start rather than hanging it.
 const ConnectTimeout = 5 * time.Second
 
 // Pool sizing. The decision is one statement of a few hundred microseconds, so
@@ -31,10 +33,19 @@ type DB struct {
 
 // Open connects the pool and proves the database answers. Options adjust the
 // pool before it is created; the instrumentation in instrument.go uses them.
-func Open(ctx context.Context, dsn string, opts ...Option) (*DB, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
+//
+// connInfo is libpq's own connection string — keyword/value or a URL — and may
+// be empty, which means every setting comes from the PG* environment: PGHOST,
+// PGPORT, PGUSER, PGPASSWORD, PGDATABASE and PGSSLMODE, exactly as psql reads
+// them. The gate and the admin binary pass "" so a shell that reaches the
+// database with psql reaches it here; the integration harness passes an explicit
+// string naming the scratch database it just created.
+func Open(ctx context.Context, connInfo string, opts ...Option) (*DB, error) {
+	cfg, err := pgxpool.ParseConfig(connInfo)
 	if err != nil {
-		return nil, fmt.Errorf("database url: %w", err)
+		// pgx quotes the connection string in this error. It can carry a
+		// password, so only the problem is reported.
+		return nil, fmt.Errorf("database connection settings: %w", unwrapParse(err))
 	}
 	if cfg.ConnConfig.RuntimeParams == nil {
 		cfg.ConnConfig.RuntimeParams = map[string]string{}
@@ -58,6 +69,23 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*DB, error) {
 		return nil, fmt.Errorf("database unreachable: %w", err)
 	}
 	return &DB{Pool: pool}, nil
+}
+
+// unwrapParse drops pgx's quoted connection string from a parse error. The
+// message it keeps is the setting that was wrong, which is what an operator
+// needs, and the string it would add can name a host, a role and — if the
+// string was malformed in a way pgx cannot redact — a password.
+func unwrapParse(err error) error {
+	var parseErr *pgconn.ParseConfigError
+	if errors.As(err, &parseErr) {
+		// The wrapped error is the one that names the setting; it never
+		// includes the string. ParseConfigError's own message does.
+		if inner := errors.Unwrap(parseErr); inner != nil {
+			return inner
+		}
+		return errors.New("invalid database connection settings")
+	}
+	return err
 }
 
 // Close releases every connection.

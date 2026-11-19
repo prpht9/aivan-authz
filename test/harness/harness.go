@@ -17,7 +17,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -41,9 +41,12 @@ const CoreRole = "aivan_core"
 // MigrationRole owns schemas public and authz and runs the migrations.
 const MigrationRole = "aivan_migrations"
 
-// DefaultSuperuser is where the integration tests expect a cluster they may
-// create roles and databases on.
-const DefaultSuperuser = "postgres://postgres@localhost/postgres"
+// SuperuserDatabase is the maintenance database a scratch database is created
+// in. The role is whatever the shell says: the suite connects as PGUSER, or as
+// the OS user when PGUSER is unset, which is what `psql -d postgres` does. There
+// is no private variable to set, and a workstation whose own role may create
+// roles and databases needs none.
+const SuperuserDatabase = "postgres"
 
 // hudDir is the companion checkout whose migrations own the schema. It is a
 // symlink in this repository's tree, recorded next to the README.
@@ -53,7 +56,8 @@ const hudDir = "aivan-hud"
 func Env(t testing.TB) {
 	t.Helper()
 	if super := superuserDSN(); !reachable(super) {
-		t.Skipf("no superuser database at %s; set AIVAN_TEST_SUPERUSER_URL", super)
+		t.Skipf("no database at %s; set PGHOST, PGPORT, PGUSER and PGPASSWORD so "+
+			"psql -d %s answers", SuperuserDatabase, SuperuserDatabase)
 	}
 	if !hudMigrationsAvailable() {
 		t.Skipf("no %s/db/migration with a Rakefile; the schema belongs to aivan-hud "+
@@ -62,16 +66,20 @@ func Env(t testing.TB) {
 }
 
 // Setup creates a scratch database with the application's schema, the roles the
-// grant matrix names, and aivan-hud's migrations applied. It returns DSNs for
-// the gate's credential and the migration credential. Cleanup is registered on
-// t.
-func Setup(t testing.TB) (service, super string) {
+// grant matrix names, and aivan-hud's migrations applied. It returns the
+// database name and DSNs for the gate's credential and the migration credential.
+//
+// The name is returned as well because a spawned binary reads PGDATABASE rather
+// than a connection string (EnvFor): the same name a test points pgx at is the
+// one the gate or console is told to use.
+func Setup(t testing.TB) (database, service, super string) {
 	t.Helper()
 	Env(t)
 	ctx := context.Background()
 
 	super = createDatabase(t, superuserDSN())
-	service = withDatabase(t, serviceDSN(), databaseName(super))
+	database = databaseName(super)
+	service = withDatabase(t, serviceDSN(), database)
 
 	admin, err := pgx.Connect(ctx, superuserDSN())
 	if err != nil {
@@ -95,26 +103,25 @@ func Setup(t testing.TB) (service, super string) {
 	// test.
 	ownPublic(t, super)
 
-	return service, super
+	return database, service, super
 }
 
-// CreateDatabase makes an empty scratch database and returns a superuser DSN
-// for it. Cleanup is registered on t.
-func CreateDatabase(t testing.TB) string {
+// CreateDatabase makes an empty scratch database and returns its name and a
+// superuser DSN for it. The name is what a spawned binary is given as
+// PGDATABASE (EnvFor). Cleanup is registered on t.
+func CreateDatabase(t testing.TB) (database, dsn string) {
 	t.Helper()
 	Env(t)
-	return createDatabase(t, superuserDSN())
+	dsn = createDatabase(t, superuserDSN())
+	return databaseName(dsn), dsn
 }
 
-// AsRole rewrites a DSN to connect as another role, keeping host and database.
+// AsRole rewrites a connection string to connect as another role, keeping the
+// database and everything else. The result is keyword/value form, so the host,
+// port and password stay where they were: in libpq's environment.
 func AsRole(t testing.TB, base, role string) string {
 	t.Helper()
-	u, err := url.Parse(base)
-	if err != nil {
-		t.Fatalf("parse dsn: %v", err)
-	}
-	u.User = url.User(role)
-	return u.String()
+	return connInfo(role, databaseName(base))
 }
 
 // CreateRole creates a login role with no privileges beyond connecting. A role
@@ -217,27 +224,69 @@ func Pool(t testing.TB, dsn string) *pgxpool.Pool {
 	return pool
 }
 
+// superuserDSN names the maintenance connection. The host, port, user and
+// password come from libpq's environment, so the harness needs no variable of
+// its own: the same shell that runs `psql -d postgres` runs the suite.
 func superuserDSN() string {
-	if v := os.Getenv("AIVAN_TEST_SUPERUSER_URL"); v != "" {
-		return v
-	}
-	return DefaultSuperuser
+	return connInfo("", SuperuserDatabase)
 }
 
-// serviceDSN defaults to the service role on the same cluster as the
-// superuser, because roles are cluster-wide and a scratch cluster is where the
-// harness can create them.
+// serviceDSN names the service role on a database that does not exist yet. The
+// harness creates a scratch database and rewrites the database in it, so the
+// name here only has to be a valid one.
 func serviceDSN() string {
-	if v := os.Getenv("AIVAN_TEST_DB_URL"); v != "" {
-		return v
+	return connInfo(ServiceRole, "aivan_authz_test")
+}
+
+// connInfo builds a keyword/value connection string naming the database and,
+// when role is not empty, the role. Everything else — host, port, password,
+// sslmode — is left out so pgx, like psql, reads it from PGHOST, PGPORT,
+// PGPASSWORD and PGSSLMODE. An empty role therefore means "whoever PGUSER or the
+// OS user says", which is the operator's own credential.
+func connInfo(role, database string) string {
+	if role == "" {
+		return "dbname=" + database
 	}
-	u, err := url.Parse(superuserDSN())
+	return "user=" + role + " dbname=" + database
+}
+
+// DatabaseOf returns the database a connection string names, whether it is a URL
+// or keyword/value, or "" when it names none.
+func DatabaseOf(connInfo string) string {
+	cfg, err := pgconn.ParseConfig(connInfo)
 	if err != nil {
-		return "postgres://" + ServiceRole + "@localhost/aivan_authz_test"
+		return ""
 	}
-	u.User = url.User(ServiceRole)
-	u.Path = "/aivan_authz_test"
-	return u.String()
+	return cfg.Database
+}
+
+// RoleOf returns the user a connection string names, or "" when it names none.
+func RoleOf(connInfo string) string {
+	cfg, err := pgconn.ParseConfig(connInfo)
+	if err != nil {
+		return ""
+	}
+	return cfg.User
+}
+
+// EnvFor returns the environment a spawned binary needs to reach database: the
+// inherited environment with PGDATABASE set, and PGUSER set when role is not
+// empty. The host, port and password are already in os.Environ(), supplied by the
+// operator as they are for psql. An empty role keeps the operator's PGUSER.
+func EnvFor(database, role string) []string {
+	env := []string{}
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if name == "PGDATABASE" || (role != "" && name == "PGUSER") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "PGDATABASE="+database)
+	if role != "" {
+		env = append(env, "PGUSER="+role)
+	}
+	return env
 }
 
 func reachable(dsn string) bool {
@@ -289,12 +338,12 @@ func ensureRoles(t testing.TB, ctx context.Context, admin *pgx.Conn) {
 			continue
 		}
 		stmt := `create role ` + ident(role) + ` login nosuperuser nocreatedb nocreaterole`
-		if role == ServiceRole {
-			if u, err := url.Parse(serviceDSN()); err == nil && u.User != nil {
-				if pw, ok := u.User.Password(); ok {
-					stmt += ` password ` + literal(pw)
-				}
-			}
+		// A cluster that authenticates with a password requires one from every
+		// role, so each role the harness creates gets the operator's own
+		// PGPASSWORD. A test switches role by setting PGUSER and inherits it
+		// (EnvFor), as it would for psql. A cluster on trust has none to copy.
+		if pw := os.Getenv("PGPASSWORD"); pw != "" {
+			stmt += ` password ` + literal(pw)
 		}
 		if _, err := admin.Exec(ctx, stmt); err != nil {
 			t.Fatalf("create role %s: %v", role, err)
@@ -377,7 +426,7 @@ func migrate(t testing.TB, super string) {
 
 	cmd := exec.Command("bundle", "exec", "rake", "db:migrate")
 	cmd.Dir = filepath.Join(root, hudDir)
-	cmd.Env = append(os.Environ(), "DATABASE_URL="+super)
+	cmd.Env = EnvFor(databaseName(super), "")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("aivan-hud migrate: %v\n%s", err, out)
 	}
@@ -392,23 +441,14 @@ func connect(t testing.TB, dsn string) *pgx.Conn {
 	return conn
 }
 
+// withDatabase points dsn at name, keeping the role it names.
 func withDatabase(t testing.TB, dsn, name string) string {
 	t.Helper()
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatalf("parse dsn: %v", err)
-	}
-	u.Path = "/" + name
-	return u.String()
+	return connInfo(RoleOf(dsn), name)
 }
 
-func databaseName(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimPrefix(u.Path, "/")
-}
+// databaseName returns the database a connection string names.
+func databaseName(dsn string) string { return DatabaseOf(dsn) }
 
 // repoRoot is the directory holding go.mod, found from this file's location.
 func repoRoot() string {
@@ -433,11 +473,18 @@ func ident(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"
 
 func literal(s string) string { return `'` + strings.ReplaceAll(s, `'`, `''`) + `'` }
 
-// redact keeps a DSN out of test output.
-func redact(dsn string) string {
-	u, err := url.Parse(dsn)
+// redact keeps a connection string's credential out of test output.
+func redact(connInfo string) string {
+	cfg, err := pgconn.ParseConfig(connInfo)
 	if err != nil {
-		return "<dsn>"
+		return "<connection settings>"
 	}
-	return u.Scheme + "://" + u.Host + u.Path
+	shown := "dbname=" + cfg.Database
+	if cfg.User != "" {
+		shown = "user=" + cfg.User + " " + shown
+	}
+	if cfg.Host != "" {
+		shown = "host=" + cfg.Host + " " + shown
+	}
+	return shown
 }

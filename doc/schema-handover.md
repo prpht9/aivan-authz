@@ -140,7 +140,10 @@ grant, so an operator can fix it without reading this document.
 Unchanged except for the environment:
 
 - No `migrate` step at boot. The gate starts, probes, serves.
-- `AIVAN_DB_URL` points at a credential with only the grants in §6.
+- The connection is libpq's own environment: `PGHOST`, `PGPORT`, `PGUSER`,
+  `PGPASSWORD` and `PGDATABASE`, as `psql` reads them. `PGUSER` names a credential
+  with only the grants in §6, and the Secret `aivan-authz-db` carries one key per
+  variable. There is no connection URL.
 - The operator credential is not mounted into the gate. It belongs to the admin
   binary, the CronJob, and `kubectl exec`.
 

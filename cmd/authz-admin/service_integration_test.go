@@ -61,7 +61,7 @@ func es256PublicPEM(t *testing.T, dir string) string {
 // binary: register, list, retire, and register again under the same name, which
 // is a rotation.
 func TestServiceRegisterRetireList(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	env := enrollEnv(t, harness.Operator(t, super))
 	key := ed25519PublicPEM(t, t.TempDir())
 
@@ -98,7 +98,7 @@ func TestServiceRegisterRetireList(t *testing.T) {
 // TestServiceRegisterRefusesALiveName: replacing the key under a name that is in
 // use would be a silent credential swap, so it is a refusal with a message.
 func TestServiceRegisterRefusesALiveName(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	env := enrollEnv(t, harness.Operator(t, super))
 	key := ed25519PublicPEM(t, t.TempDir())
 
@@ -120,7 +120,7 @@ func TestServiceRegisterRefusesALiveName(t *testing.T) {
 // SubjectPublicKeyInfo, and the raw body without armour is accepted too. A
 // private key in the same slot is refused rather than stored.
 func TestServiceKeyFileForms(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	env := enrollEnv(t, harness.Operator(t, super))
 	dir := t.TempDir()
 
@@ -184,7 +184,7 @@ func TestServiceKeyFileForms(t *testing.T) {
 // TestServiceRetireUnknownName: an operator typing a name wants to know it
 // matched nothing.
 func TestServiceRetireUnknownName(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	env := enrollEnv(t, harness.Operator(t, super))
 
 	code, out := runConsole(t, env, "service", "retire", "--name", "nobody")
@@ -199,7 +199,7 @@ func TestServiceRetireUnknownName(t *testing.T) {
 // TestPurgeSubcommand runs the scheduled pass the way the CronJob does, through
 // the same command an operator has.
 func TestPurgeSubcommand(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 	env := enrollEnv(t, harness.Operator(t, super))
 
 	code, out := runConsole(t, env, "purge")

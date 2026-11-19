@@ -66,8 +66,19 @@ func binary(t *testing.T) string {
 	return binPath
 }
 
-// serveEnv is a complete, valid environment pointing at dsn.
+// serveEnv is a complete, valid environment pointing at the scratch database.
+// database and role are what the gate reads from PGDATABASE and PGUSER; host,
+// port and password are inherited, as psql inherits them. dsn is still taken
+// because a caller that rewrote it (a password sentinel) wants the string's
+// database, and it keeps every existing call site unchanged.
 func serveEnv(t *testing.T, dsn, listen string) []string {
+	env := harness.EnvFor(harness.DatabaseOf(dsn), harness.RoleOf(dsn))
+	return append(env, servePolicyEnv(t, listen)...)
+}
+
+// servePolicyEnv adds the policy, host list and listen address to an environment
+// that already names its database.
+func servePolicyEnv(t *testing.T, listen string) []string {
 	t.Helper()
 	policy := filepath.Join(t.TempDir(), "policy.yaml")
 	body := `
@@ -80,12 +91,11 @@ hosts:
 	if err := os.WriteFile(policy, []byte(body), 0o600); err != nil {
 		t.Fatalf("write policy: %v", err)
 	}
-	return append(os.Environ(),
-		"AIVAN_DB_URL="+dsn,
+	return []string{
 		"AIVAN_HOSTS=aivan-hud.home.arpa",
-		"AIVAN_POLICY="+policy,
-		"AIVAN_LISTEN="+listen,
-	)
+		"AIVAN_POLICY=" + policy,
+		"AIVAN_LISTEN=" + listen,
+	}
 }
 
 // runServe runs `authz serve` to completion and returns its exit code and
@@ -115,7 +125,7 @@ func runServe(t *testing.T, env []string) (int, string) {
 // TestServeRefusesSuperuser is S16 via the binary: exit non-zero, and the
 // message tells an operator what to do.
 func TestServeRefusesSuperuser(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 
 	code, out := runServe(t, serveEnv(t, super, "127.0.0.1:0"))
 	if code == 0 {
@@ -137,7 +147,7 @@ func TestServeRefusesSuperuser(t *testing.T) {
 
 // TestServeRefusesPasswordDigest is S20 via the binary.
 func TestServeRefusesPasswordDigest(t *testing.T) {
-	_, super := harness.Setup(t)
+	_, _, super := harness.Setup(t)
 
 	const role = "serve_digest_reader"
 	harness.CreateRole(t, super, role, "")
@@ -163,7 +173,7 @@ func TestServeRefusesPasswordDigest(t *testing.T) {
 // TestServeStartsAndDrains is the positive half: the correct role starts, logs
 // one line, answers /healthz, and exits 0 on SIGTERM.
 func TestServeStartsAndDrains(t *testing.T) {
-	service, _ := harness.Setup(t)
+	_, service, _ := harness.Setup(t)
 
 	// A port of 0 makes the kernel choose; the startup line carries the real
 	// address, which is also what an operator reads.
@@ -267,10 +277,10 @@ func TestServeStartsAndDrains(t *testing.T) {
 // unit that still documents one in its deployment will fail here rather than
 // silently applying an old embedded schema.
 func TestMigrateSubcommandIsGone(t *testing.T) {
-	dsn := harness.CreateDatabase(t)
+	database, _ := harness.CreateDatabase(t)
 
 	cmd := exec.Command(binary(t), "migrate")
-	cmd.Env = append(os.Environ(), "AIVAN_DB_URL="+dsn)
+	cmd.Env = harness.EnvFor(database, "")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("migrate exited 0; output: %s", out)

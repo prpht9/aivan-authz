@@ -202,7 +202,8 @@ func TestPurgeRunsOutsideTheGate(t *testing.T) {
 // TestPurgeRunsAsTheScheduledCredential pins what the CronJob's role may do.
 //
 // The scheduled pass is hud's chart, running as aivan_core with hud's own
-// DATABASE_URL — not the schema owner, and not the gate. The grant is in
+// database credential (libpq's PG* variables) — not the schema owner, and not
+// the gate. The grant is in
 // aivan-hud/db/migration/202611150100_authz_purge_grants.rb, and this test is
 // what notices if that migration and these statements drift apart.
 //

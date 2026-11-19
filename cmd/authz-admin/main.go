@@ -99,11 +99,13 @@ func consoleContext() (context.Context, context.CancelFunc) {
 }
 
 func consolePool(ctx context.Context) (*store.DB, error) {
-	dsn, err := config.DatabaseURL(os.Getenv)
-	if err != nil {
+	// PGDATABASE is checked here so a shell with no database named fails with
+	// a sentence rather than connecting to one named after the OS user. The
+	// rest of the connection is libpq's own environment, as it is for psql.
+	if _, err := config.DatabaseName(os.Getenv); err != nil {
 		return nil, err
 	}
-	return store.Open(ctx, dsn)
+	return store.Open(ctx, "")
 }
 
 // listDevices prints one person's devices. A username with no devices is an
