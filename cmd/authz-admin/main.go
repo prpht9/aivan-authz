@@ -106,15 +106,19 @@ commands:
   service retire --name <name>   stop accepting a service's signatures
   service list                   list registered services
 
-  relay-keygen [--dir config] [--name aivan-authz]
+  relay-keygen [--dir <path>] [--name aivan-authz]
                                  create the service key this tool signs to
                                  aivan-approval with; writes <name>.key (0600)
                                  and <name>.pub, and prints the public half to
                                  register there
-  relay-register --device <uuid> [--dir config] [--name aivan-authz]
+  relay-register --device <uuid> [--dir <path>] [--name aivan-authz]
                                  register one live device with aivan-approval
-  relay-retire --device <uuid> [--dir config] [--name aivan-authz]
+  relay-retire --device <uuid> [--dir <path>] [--name aivan-authz]
                                  retire one device at aivan-approval
+
+The service key lives in ~/.config/aivan/keys (or $XDG_CONFIG_HOME/aivan/keys).
+AIVAN_SERVICE_KEY_DIR overrides that directory; --dir overrides both. The
+default does not depend on the working directory.
 
 AIVAN_APPROVAL_URL names the relay (default https://approval-dev.cincyaivan.com);
 AIVAN_APPROVAL_CA is an optional PEM bundle for a CA the host does not trust yet.
@@ -246,8 +250,11 @@ func enrollNew(out io.Writer, args []string) error {
 // at home, and the relay is the mailbox rather than the authority. The operator
 // runs `relay-register --device <id>` once the relay answers.
 func registerClaimed(out io.Writer, pool *pgxpool.Pool, res console.EnrollResult, opts map[string]string) error {
-	relayClient, err := approvalClientFor(valueOr(opts, "--dir", servicekey.DefaultDir),
-		valueOr(opts, "--name", servicekey.DefaultName))
+	dir, err := keyDir(opts)
+	if err != nil {
+		return err
+	}
+	relayClient, err := approvalClientFor(dir, valueOr(opts, "--name", servicekey.DefaultName))
 	if err != nil {
 		return err
 	}
@@ -286,15 +293,19 @@ func registerClaimed(out io.Writer, pool *pgxpool.Pool, res console.EnrollResult
 // relayKeygen creates the service key pair this tool signs to aivan-approval
 // with.
 //
-// The private half is written to a directory the repository ignores, at 0600, and
-// is never printed. The public half is printed because registering it is the
-// next step and the operator has to carry it to the relay's host.
+// The private half is written at 0600 and is never printed. The default directory
+// is the operator config directory, so the pair is the same one from any working
+// directory. The public half is printed because registering it is the next step
+// and the operator has to carry it to the relay's host.
 func relayKeygen(out io.Writer, args []string) error {
 	opts, err := parseFlags(args, []string{"--dir", "--name"})
 	if err != nil {
 		return err
 	}
-	dir := valueOr(opts, "--dir", servicekey.DefaultDir)
+	dir, err := keyDir(opts)
+	if err != nil {
+		return fmt.Errorf("relay-keygen: %w", err)
+	}
 	name := valueOr(opts, "--name", servicekey.DefaultName)
 
 	paths, key, err := servicekey.Generate(dir, name)
@@ -426,9 +437,20 @@ func relayFlags(args []string) (deviceID, dir, name string, err error) {
 	if !ok || strings.TrimSpace(deviceID) == "" {
 		return "", "", "", errors.New("usage: --device <uuid> is required")
 	}
+	dir, err = keyDir(opts)
+	if err != nil {
+		return "", "", "", err
+	}
 	return strings.TrimSpace(deviceID),
-		valueOr(opts, "--dir", servicekey.DefaultDir),
+		dir,
 		valueOr(opts, "--name", servicekey.DefaultName), nil
+}
+
+// keyDir is the directory the relay commands read and write. An omitted --dir
+// is the operator default (~/.config/aivan/keys, or AIVAN_SERVICE_KEY_DIR), so
+// a command finds the same pair from any working directory.
+func keyDir(opts map[string]string) (string, error) {
+	return servicekey.ResolveDir(opts["--dir"])
 }
 
 // approvalClientFor loads a key pair and builds the client that signs with it.

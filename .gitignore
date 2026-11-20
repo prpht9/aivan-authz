@@ -6,11 +6,12 @@
 /scratch
 /seed
 
-# The operator's service key pair. `authz-admin relay-keygen` writes here and
-# nothing in this directory is tracked: the private half signs registrations with
-# aivan-approval, and a key in git is a key that can enrol a device against any
-# user id at the relay. The README is the one exception, so the directory exists
-# with an explanation rather than appearing as an unexplained empty path.
+# An older `authz-admin relay-keygen` wrote the service key pair here. The tool
+# now writes ~/.config/aivan/keys (AIVAN_SERVICE_KEY_DIR, or --dir). Nothing in
+# this directory is tracked: a private half left behind still signs registrations
+# with aivan-approval, and a key in git is a key that can enrol a device against
+# any user id at the relay. The README is the one exception, so the directory
+# exists with an explanation rather than appearing as an unexplained empty path.
 /config/*
 !/config/README.md
 

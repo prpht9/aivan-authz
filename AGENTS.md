@@ -80,5 +80,8 @@ Both take their connection from the environment above and nothing else.
   from a workstation over a port-forward.
 - Connect through libpq's `PG*` variables. Never add a URL variable, and never
   parse or build a connection string in application code.
-- Leave `config/` and anything holding a key untracked. `.gitignore` says why.
+- The service key lives in `~/.config/aivan/keys` (`AIVAN_SERVICE_KEY_DIR`, then
+  `--dir`). It does not live in this checkout, and it does not live in
+  `~/.aivan`, which worker containers mount. `config/` stays gitignored so an
+  older pair left there is not committed. `.gitignore` says why.
 - `rake lint` runs `go vet` and fails if `gofmt` would rewrite anything.

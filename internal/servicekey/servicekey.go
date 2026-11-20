@@ -2,10 +2,12 @@
 // when it acts as a home service.
 //
 // The private half never enters the gate's image and never reaches the cluster.
-// It is created on a workstation, written into a directory the repository
-// ignores, and copied by the operator to wherever a secret belongs: a Kubernetes
-// Secret, a pass entry, an offline backup. Only the public half is registered
-// with a service, and only the public half is ever printed here.
+// It is created on a workstation, in the operator config directory
+// (~/.config/aivan/keys, or $XDG_CONFIG_HOME/aivan/keys), and copied by the
+// operator to wherever a second copy belongs: a Kubernetes Secret, a pass entry,
+// an offline backup. The directory is not ~/.aivan, which worker containers
+// mount. Only the public half is registered with a service, and only the public
+// half is ever printed here.
 //
 // The encoding is the one `openssl pkey` reads and writes, so the files work
 // with the tools an operator already has and with aivan-approval's
@@ -28,10 +30,11 @@ import (
 )
 
 const (
-	// DefaultDir is where the operator tool writes a generated pair. The
-	// repository ignores everything in it except its README, so a key cannot be
-	// committed by accident.
-	DefaultDir = "config"
+	// EnvDir is the environment variable an operator sets when the pair lives
+	// somewhere other than the default. A relative value is resolved against
+	// the working directory, which is the old cwd-relative behaviour, kept for
+	// a shell that names a directory on purpose.
+	EnvDir = "AIVAN_SERVICE_KEY_DIR"
 
 	// DefaultName is the service name aivan-approval must know this key by. It
 	// is the name the gate signs with, not a name of the key's own.
@@ -95,18 +98,52 @@ type Paths struct {
 	Public  string
 }
 
+// ResolveDir chooses the directory a pair lives in.
+//
+// An explicit directory wins, then EnvDir, then the operator config directory.
+// The explicit and environment values may be relative; the default is absolute,
+// so a command run from aivan-hud finds the same key as one run from
+// aivan-authz. An empty explicit value is "not given", which is what a flag
+// parser returns when the operator omitted --dir.
+//
+// The default is $XDG_CONFIG_HOME/aivan/keys, or ~/.config/aivan/keys. It is not
+// ~/.aivan: that directory is the forge home, and worker containers mount pieces
+// of it. A signing key there would travel with files that are copied and logged.
+func ResolveDir(explicit string) (string, error) {
+	if dir := strings.TrimSpace(explicit); dir != "" {
+		return dir, nil
+	}
+	if dir := strings.TrimSpace(os.Getenv(EnvDir)); dir != "" {
+		return dir, nil
+	}
+	return defaultDir()
+}
+
+// defaultDir is the XDG config location for this operator's service keys.
+func defaultDir() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); dir != "" {
+		return filepath.Join(dir, "aivan", "keys"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("service key directory: %w (set %s or pass --dir)", err, EnvDir)
+	}
+	return filepath.Join(home, ".config", "aivan", "keys"), nil
+}
+
 // PathsFor is the file layout for a name. The name is validated first, so it
-// cannot name a path outside dir.
+// cannot name a path outside dir. An empty dir is the operator default.
 func PathsFor(dir, name string) (Paths, error) {
 	if err := validName(name); err != nil {
 		return Paths{}, err
 	}
-	if strings.TrimSpace(dir) == "" {
-		dir = DefaultDir
+	resolved, err := ResolveDir(dir)
+	if err != nil {
+		return Paths{}, err
 	}
 	return Paths{
-		Private: filepath.Join(dir, name+".key"),
-		Public:  filepath.Join(dir, name+".pub"),
+		Private: filepath.Join(resolved, name+".key"),
+		Public:  filepath.Join(resolved, name+".pub"),
 	}, nil
 }
 
@@ -185,7 +222,7 @@ func Load(dir, name string) (*KeyPair, error) {
 	info, err := os.Stat(paths.Private)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("no key at %s; create one with `authz-admin relay-keygen`", paths.Private)
+			return nil, fmt.Errorf("no key at %s; create one with `authz-admin relay-keygen`", absPath(paths.Private))
 		}
 		return nil, fmt.Errorf("stat %s: %w", paths.Private, err)
 	}
@@ -242,6 +279,16 @@ func parsePublicPEM(body []byte) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("not an Ed25519 key")
 	}
 	return public, nil
+}
+
+// absPath reports a missing key as an absolute path. A relative one reads as
+// "the file is missing" when the real fault is the working directory.
+func absPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
 }
 
 // validName keeps a service name usable as a filename and as a value in

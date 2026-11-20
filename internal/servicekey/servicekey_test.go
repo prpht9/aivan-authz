@@ -142,11 +142,88 @@ func TestLoadRefusesALoosePrivateKey(t *testing.T) {
 }
 
 // TestLoadNamesTheFixWhenTheKeyIsAbsent: the first thing a new operator hits is
-// no key at all, so the message has to name the command that creates one.
+// no key at all, so the message has to name the command that creates one, and
+// the path has to be absolute so a wrong working directory is visible.
 func TestLoadNamesTheFixWhenTheKeyIsAbsent(t *testing.T) {
-	_, err := Load(t.TempDir(), "aivan-authz")
+	dir := t.TempDir()
+	_, err := Load(dir, "aivan-authz")
 	if err == nil || !strings.Contains(err.Error(), "relay-keygen") {
 		t.Fatalf("err = %v, want a message naming relay-keygen", err)
+	}
+	if !strings.Contains(err.Error(), dir) {
+		t.Fatalf("err = %v, want the directory that was searched", err)
+	}
+	if !filepath.IsAbs(pathFromAbsence(t, err)) {
+		t.Fatalf("err = %v, want an absolute path", err)
+	}
+}
+
+// pathFromAbsence pulls the path out of Load's missing-key sentence.
+func pathFromAbsence(t *testing.T, err error) string {
+	t.Helper()
+	const prefix = "no key at "
+	msg := err.Error()
+	start := strings.Index(msg, prefix)
+	if start < 0 {
+		t.Fatalf("err = %v, want a path", err)
+	}
+	rest := msg[start+len(prefix):]
+	end := strings.Index(rest, ";")
+	if end < 0 {
+		t.Fatalf("err = %v, want a path before the fix", err)
+	}
+	return rest[:end]
+}
+
+// TestResolveDirIgnoresTheWorkingDirectory: a command run from another checkout
+// must find the same pair. --dir wins, then AIVAN_SERVICE_KEY_DIR, then the XDG
+// config directory. An empty explicit value is "the operator omitted --dir".
+func TestResolveDirIgnoresTheWorkingDirectory(t *testing.T) {
+	t.Setenv(EnvDir, "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// UserHomeDir prefers this on macOS, and HOME everywhere else. Setting both
+	// keeps the assertion on the directory this test created.
+	t.Setenv("USERPROFILE", home)
+	got, err := ResolveDir("")
+	if err != nil {
+		t.Fatalf("ResolveDir: %v", err)
+	}
+	want := filepath.Join(home, ".config", "aivan", "keys")
+	if got != want {
+		t.Fatalf("default = %s, want %s", got, want)
+	}
+
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	got, err = ResolveDir("")
+	if err != nil {
+		t.Fatalf("ResolveDir with XDG: %v", err)
+	}
+	if got != filepath.Join(xdg, "aivan", "keys") {
+		t.Fatalf("XDG dir = %s", got)
+	}
+
+	t.Setenv(EnvDir, "/var/keys")
+	got, err = ResolveDir("")
+	if err != nil {
+		t.Fatalf("ResolveDir with env: %v", err)
+	}
+	if got != "/var/keys" {
+		t.Fatalf("env dir = %s, want the environment value", got)
+	}
+	if got, err = ResolveDir("  "); err != nil || got != "/var/keys" {
+		t.Fatalf("blank explicit = %s, %v; want the environment value", got, err)
+	}
+
+	got, err = ResolveDir("/tmp/one-off")
+	if err != nil {
+		t.Fatalf("ResolveDir explicit: %v", err)
+	}
+	if got != "/tmp/one-off" {
+		t.Fatalf("explicit = %s, want the flag", got)
 	}
 }
 

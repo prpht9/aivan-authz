@@ -77,12 +77,15 @@ The connection is libpq's own environment (`PGHOST`, `PGPORT`, `PGUSER`,
 `aivan-hud/db/migration/202611190100_operator_surface_grants.rb`;
 `doc/runbook.md` states it for an operator.
 
-The service key is the credential that signs a registration, and it lives on a
-workstation:
+The service key is the credential that signs a registration, and it lives in
+the operator config directory, `~/.config/aivan/keys`. The path does not depend
+on the working directory, so the same command works from `aivan-hud` and from
+this checkout. `AIVAN_SERVICE_KEY_DIR` overrides the directory; `--dir` overrides
+both.
 
 ```console
 $ ./bin/authz-admin relay-keygen
-created config/aivan-authz.key (0600) and config/aivan-authz.pub
+created /Users/chris/.config/aivan/keys/aivan-authz.key (0600) and /Users/chris/.config/aivan/keys/aivan-authz.pub
 fingerprint: 8d6408ae…
 ```
 
@@ -97,13 +100,14 @@ whose Secret still holds only the old key fails to start with
 `CreateContainerConfigError`, and once started it refuses with `PGDATABASE is
 required`.
 
-`config/` is gitignored, and the private half is written `0600`. Register the
-public half with the relay, on a host that can reach its database, then move the
-private half to a Secret or a `pass` entry and delete the copy here:
+The private half is written `0600` in a `0700` directory. Register the public
+half with the relay, on a host that can reach its database, then copy the
+private half to a Secret or a `pass` entry. The workstation copy is the one
+`authz-admin` signs with, so deleting it means the next registration has no key:
 
 ```console
 $ cd ../aivan-approval
-$ rake "service:register[aivan-authz]" KEY=../aivan-authz/config/aivan-authz.pub ALG=ed25519
+$ rake "service:register[aivan-authz]" KEY=~/.config/aivan/keys/aivan-authz.pub ALG=ed25519
 ```
 
 `service:register` prints the same fingerprint the keygen did. If the two
